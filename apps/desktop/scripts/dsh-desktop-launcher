@@ -1,0 +1,43 @@
+#!/bin/sh
+# Launcher wrapper for the DeepSeek Harness desktop app.
+#
+# Some hosts cannot run Chromium's sandbox at all — Ubuntu 23.10+/24.04
+# blocks unprivileged user namespaces via AppArmor
+# (kernel.apparmor_restrict_unprivileged_userns=1), which makes both the
+# SUID helper and the userns fallback abort during startup ("clicking the
+# launcher does nothing"). This wrapper starts the app with the sandbox and
+# watches the first two seconds of output; if Chromium prints a startup
+# FATAL (the sandbox abort signature), it relaunches with --no-sandbox so
+# the app still opens. A healthy launch is never delayed — the app starts
+# immediately and the wrapper only supervises.
+set -u
+
+BIN="/opt/DeepSeek Harness/dsh-desktop"
+LOG="/tmp/dsh-desktop-launch.$$.log"
+
+: >"$LOG"
+"$BIN" "$@" >"$LOG" 2>&1 &
+APP_PID=$!
+
+# Poll for an early Chromium fatal (sandbox abort) for up to 2 seconds.
+I=0
+while [ "$I" -lt 20 ]; do
+  if grep -q "FATAL:" "$LOG" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+  I=$((I + 1))
+done
+
+if grep -q "FATAL:" "$LOG" 2>/dev/null; then
+  # Aborted during startup (almost certainly the sandbox); retry unsandboxed.
+  kill "$APP_PID" 2>/dev/null
+  wait "$APP_PID" 2>/dev/null
+  : >"$LOG"
+  "$BIN" --no-sandbox "$@" >"$LOG" 2>&1 &
+  APP_PID=$!
+fi
+
+# The app keeps writing to the (now unlinked) log inode, so /tmp stays clean.
+rm -f "$LOG"
+wait "$APP_PID"

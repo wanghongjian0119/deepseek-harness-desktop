@@ -2,6 +2,8 @@
 
 [English](README.md) | 中文
 
+本仓库是 [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) 的公开 MIT fork，额外提供 **仅 Linux** 的桌面应用（`.deb` 与 AppImage）。不是 DeepSeek 官方发行版。见[桌面应用](docs/user/desktop-app.md)。
+
 DeepSeek Harness（`dsh`）是由 [DeepSeek AI](https://deepseek.com) 开发的开源 agent harness（智能体框架）。
 
 它采用**一切皆插件**的架构，并由 [Cordis](https://github.com/cordiverse/cordis) 驱动，其设计参见论文 [_A Programming Paradigm for Spatiotemporal Composability_](https://github.com/cordiverse/paper)。

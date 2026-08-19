@@ -18,8 +18,11 @@
      chat scroller and the takeover frames pad clearance + 16px per side while
      the input card clears the bare clearance, so the input card stays exactly
      content + 32px at every width. Declared on the root because the
-     transcript and the composer seat are sibling subtrees. */
-  --dsh-chat-content-width: 748px;
+     transcript and the composer seat are sibling subtrees.
+     W is fluid: it fills the center column up to a 960px cap, so wide
+     windows no longer leave oversized gutters on either side of the
+     transcript while narrow columns still fill edge to edge. */
+  --dsh-chat-content-width: min(960px, 100%);
   --dsh-composer-card-max-width: calc(var(--dsh-chat-content-width) + 32px);
   --dsh-composer-side-clearance: 16px;
   --dsh-composer-dock-inset: 8px;

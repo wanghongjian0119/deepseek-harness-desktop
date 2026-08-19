@@ -1,0 +1,6 @@
+# Build outputs and the assembled backend payload (lib/ is ignored globally).
+release/
+resources/dsh/
+.stage/
+build/icon.png
+build/icons/

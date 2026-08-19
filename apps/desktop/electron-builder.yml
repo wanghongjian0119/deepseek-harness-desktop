@@ -1,0 +1,63 @@
+# electron-builder packaging config for the DeepSeek Harness desktop app.
+#
+# The shell (this package's own lib/ and package.json) is packed into the
+# default asar; the dsh payload (Node runtime + CLI closure + frontend dist)
+# travels in extraResources so the spawned backend reads real files — a
+# separate Node process cannot read asar, and the profile module fallback
+# creates symlinks into it.
+
+appId: ai.deepseek.harness
+productName: DeepSeek Harness
+directories:
+  output: release
+  buildResources: build
+files:
+  - lib/**/*
+  - package.json
+extraResources:
+  - from: resources/dsh
+    to: dsh
+    # The default extraResources filter drops node_modules; the payload needs
+    # its full hoisted closure on disk (a separate Node process reads it).
+    filter:
+      - "**/*"
+  # Window/taskbar icon referenced by the main process at runtime.
+  - from: build/icon.png
+    to: icon.png
+# The launcher wrapper sits beside the binary; the desktop entry runs it so
+# hosts whose sandbox cannot initialize (Ubuntu 23.10+ AppArmor userns
+# restriction) fall back to --no-sandbox instead of aborting silently.
+extraFiles:
+  - from: scripts/dsh-desktop-launcher
+    to: dsh-desktop-launcher
+# The scoped npm name would otherwise leak into artifact filenames/paths
+# (`release/@deepseek-ai/...`); use the product name everywhere.
+artifactName: ${productName}-${version}-${arch}.${ext}
+asar: true
+# The payload ships its own Node runtime; nothing in the shell links native
+# modules against Electron's ABI, so skip the rebuild step entirely.
+npmRebuild: false
+# This fork ships Linux installers only (.deb and AppImage).
+linux:
+  executableName: dsh-desktop
+  maintainer: wanghongjian <434633567@qq.com>
+  # A full icon set (16x16 … 1024x1024) under build/icons: shipping only one
+  # large hicolor size makes launchers fall back to the generic icon.
+  icon: build/icons
+  desktop:
+    entry:
+      # Must match the window's actual WM_CLASS or the running window will
+      # not associate with this launcher entry (and GNOME shows a generic
+      # icon). Electron derives WM_CLASS from the package name
+      # (@deepseek-ai/dsh-desktop → deepseek-ai-dsh-desktop); verified via
+      # xprop on the running window.
+      StartupWMClass: deepseek-ai-dsh-desktop
+  target:
+    - AppImage
+    - deb
+  category: Development
+deb:
+  # Refresh the desktop database and hicolor icon cache on (un)install so the
+  # icon appears without a logout/login.
+  afterInstall: scripts/deb-after-install.sh
+  afterRemove: scripts/deb-after-remove.sh

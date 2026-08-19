@@ -65,7 +65,7 @@ for (let index = 0; index < queue.length; index += 1) {
 }
 
 if (failures.length > 0) {
-  console.error('verify-runtime-closure: required workspace peers are missing from python/sdk-runtime dependencies:')
+  console.error(`verify-runtime-closure: required workspace peers are missing from ${runtimeName} dependencies:`)
   for (const failure of failures) console.error(`  ${failure}`)
   process.exit(1)
 }
