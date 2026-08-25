@@ -27,6 +27,20 @@ import { payloadsDir, switchCurrentPointer } from '../payload.ts'
 import { ensureDesktopDeployRoot } from '../ensure-deploy-root.ts'
 import { resolveNpmRegistry } from './npm-mirrors.ts'
 
+/**
+ * Parse the `owner/repo` pair from a git remote URL (https or scp-style ssh).
+ * @param remoteUrl - output of `git remote get-url origin`.
+ * @returns the `owner/repo` pair, or undefined when the URL is not parseable.
+ */
+export function parseGitRemoteRepo(remoteUrl: string): string | undefined {
+  const trimmed = remoteUrl.trim()
+  const https = trimmed.match(/^https?:\/\/[^/:]+\/([^/]+\/[^/]+?)(?:\.git)?$/)
+  if (https !== null) return https[1]
+  const scp = trimmed.match(/^git@[^:]+:([^/]+\/[^/]+?)(?:\.git)?$/)
+  if (scp !== null) return scp[1]
+  return undefined
+}
+
 /** pnpm fallback when the source manifest has no packageManager field. */
 export const DEFAULT_PNPM_VERSION = '11.7.0'
 

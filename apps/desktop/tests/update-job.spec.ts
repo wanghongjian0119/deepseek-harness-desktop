@@ -7,6 +7,7 @@ import {
   buildUpdateChildEnv,
   ensurePackageManagerShims,
   formatByteSize,
+  parseGitRemoteRepo,
   parsePnpmVersion,
   pnpmRegistryArgs,
   prependPathEntry,
@@ -121,6 +122,23 @@ describe('pnpmRegistryArgs', () => {
       '--registry',
       'https://registry.npmmirror.com',
     ])
+  })
+})
+
+describe('parseGitRemoteRepo', () => {
+  it('parses https remote URLs', () => {
+    expect(parseGitRemoteRepo('https://github.com/deepseek-ai/deepseek-harness.git')).toBe('deepseek-ai/deepseek-harness')
+    expect(parseGitRemoteRepo('https://github.com/deepseek-ai/deepseek-harness')).toBe('deepseek-ai/deepseek-harness')
+  })
+
+  it('parses scp-style ssh remote URLs', () => {
+    expect(parseGitRemoteRepo('git@github.com:deepseek-ai/deepseek-harness.git')).toBe('deepseek-ai/deepseek-harness')
+  })
+
+  it('rejects URLs that do not carry an owner/repo pair', () => {
+    expect(parseGitRemoteRepo('https://github.com/deepseek-ai')).toBeUndefined()
+    expect(parseGitRemoteRepo('/home/user/repo')).toBeUndefined()
+    expect(parseGitRemoteRepo('not a url')).toBeUndefined()
   })
 })
 
