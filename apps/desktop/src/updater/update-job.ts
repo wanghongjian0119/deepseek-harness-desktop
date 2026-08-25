@@ -127,6 +127,11 @@ export function buildUpdateChildEnv(
     GIT_TERMINAL_PROMPT: '0',
     PNPM_HOME: join(workDir, 'pnpm-home'),
     npm_config_store_dir: storeDir ?? join(workDir, 'pnpm-store'),
+    // Large binary tarballs (e.g. @openai/codex ≈122MB) exceed pnpm's 60s
+    // default fetch-timeout once concurrent downloads share the link; give
+    // them headroom and cut concurrency so each request keeps bandwidth.
+    npm_config_fetch_timeout: '600000',
+    npm_config_network_concurrency: '4',
     XDG_CACHE_HOME: join(workDir, 'cache'),
   }
   if (registryUrl !== undefined && registryUrl !== '') {
@@ -202,7 +207,12 @@ export async function ensurePackageManagerShims(
  * @param registryUrl - selected mirror base URL.
  */
 export async function writeCheckoutNpmrc(sourceRoot: string, registryUrl: string): Promise<void> {
-  await writeFile(join(sourceRoot, '.npmrc'), `registry=${registryUrl}\n`)
+  await writeFile(join(sourceRoot, '.npmrc'), [
+    `registry=${registryUrl}`,
+    'fetch-timeout=600000',
+    'network-concurrency=4',
+    '',
+  ].join('\n'))
 }
 
 /** Build the pnpm argv fragment that forces a registry on every install. */

@@ -75,6 +75,12 @@ describe('buildUpdateChildEnv', () => {
     expect(env.npm_config_store_dir).toBe('/home/user/.dsh/desktop/pnpm-store')
     expect(env.PNPM_HOME).toBe('/tmp/update-work/pnpm-home')
   })
+
+  it('injects pnpm fetch timeout and lowered concurrency for large tarballs', () => {
+    const env = buildUpdateChildEnv('/tmp/update-work', { PATH: '/usr/bin' })
+    expect(env.npm_config_fetch_timeout).toBe('600000')
+    expect(env.npm_config_network_concurrency).toBe('4')
+  })
 })
 
 describe('ensurePackageManagerShims / prependPathEntry', () => {
@@ -155,7 +161,12 @@ describe('writeCheckoutNpmrc / rewriteLockfileNpmjsHosts', () => {
         '',
       ].join('\n'))
       await writeCheckoutNpmrc(root, 'https://registry.npmmirror.com')
-      expect(readFileSync(join(root, '.npmrc'), 'utf8')).toBe('registry=https://registry.npmmirror.com\n')
+      expect(readFileSync(join(root, '.npmrc'), 'utf8')).toBe([
+        'registry=https://registry.npmmirror.com',
+        'fetch-timeout=600000',
+        'network-concurrency=4',
+        '',
+      ].join('\n'))
       expect(await rewriteLockfileNpmjsHosts(root, 'https://registry.npmmirror.com')).toBe(2)
       expect(readFileSync(join(root, 'pnpm-lock.yaml'), 'utf8')).toContain('registry.npmmirror.com')
       expect(readFileSync(join(root, 'pnpm-lock.yaml'), 'utf8')).not.toContain('registry.npmjs.org')
