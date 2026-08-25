@@ -130,7 +130,7 @@ export interface LaunchServerOptions {
   nodeBinary: string
   /** The dsh CLI entry path (`lib/bin.js`). */
   cliEntry: string
-  /** Extra web-app arguments appended after `web --port 0`. */
+  /** Extra web-app arguments appended after `web --port 0 --no-open`. */
   extraArgs?: readonly string[]
   /** Environment overrides merged over `process.env`. */
   env?: NodeJS.ProcessEnv
@@ -166,7 +166,13 @@ export function launchServer(options: LaunchServerOptions): ServerHandle {
   const spawnChild = options.spawnChild ?? ((command: string, args: string[], spawnOptions: { env: NodeJS.ProcessEnv }): SpawnedChild => {
     return spawn(command, args, { env: spawnOptions.env, stdio: ['ignore', 'pipe', 'pipe'] })
   })
-  const child = spawnChild(options.nodeBinary, [options.cliEntry, 'web', '--port', '0', ...(options.extraArgs ?? [])], { env })
+  // Desktop owns the GUI window; never let `dsh web` open the system browser
+  // (upstream defaults openBrowser on for local CLI launches).
+  const child = spawnChild(
+    options.nodeBinary,
+    [options.cliEntry, 'web', '--port', '0', '--no-open', ...(options.extraArgs ?? [])],
+    { env },
+  )
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
     child.once('exit', (code, signal) => { resolve({ code, signal }) })
   })

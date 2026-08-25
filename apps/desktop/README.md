@@ -21,7 +21,7 @@ The payload assembled by `scripts/assemble-payload.ts` is self-contained:
 - **dsh CLI** — deployed as part of the closure (`runtime/node_modules/@deepseek-ai/dsh`), so its `lib/` and shipped `config/agent-presets` travel with it and the profile module fallback's installation anchor resolves naturally.
 - **Frontend dist** — inside the deployed `@deepseek-ai/dsh-web-frontend`.
 
-The backend runs `web --port 0` (OS-assigned port, no conflicts) and prints `dsh web: http://127.0.0.1:<port>` as its readiness line; the shell parses it and loads that URL.
+The backend runs `web --port 0 --no-open` (OS-assigned port, no conflicts; the shell owns the GUI window so the backend must not open the system browser) and prints `dsh web: http://127.0.0.1:<port>` as its readiness line; the shell parses it and loads that URL.
 
 ## Development
 
@@ -33,7 +33,7 @@ pnpm --filter @deepseek-ai/dsh-desktop run build:payload  # assemble resources/d
 pnpm --filter @deepseek-ai/dsh-desktop run dev            # launch Electron against the staged payload
 ```
 
-`build:payload` ends with a keyless smoke that boots the staged backend over a scratch `$DSH_HOME` and asserts the served index carries the `window.__DSH_BOOT__` manifest — the same readiness the window waits for.
+`build:payload` ends with a keyless smoke that boots the staged backend over a scratch `$DSH_HOME` and asserts the served index carries the `__DSH_BOOT__` boot manifest (`window.__DSH_BOOT__` or `globalThis["__DSH_BOOT__"]`) — the same readiness the window waits for.
 
 For a one-off against a custom payload: `DSH_DESKTOP_PAYLOAD=/path/to/dsh pnpm --filter @deepseek-ai/dsh-desktop run dev`.
 
@@ -51,7 +51,7 @@ Linux notes:
 
 ## Auto-update (source-based)
 
-The official repository publishes no installers — only the `master` branch — so the app tracks the **upstream master commit SHA** instead of a version number. On launch (and every six hours while running) the shell compares the payload's recorded `sourceRef` with the upstream master commit; when newer code exists it shows a notification, and after confirmation it:
+The official repository publishes no installers — only the `master` branch — so the app tracks the **upstream master commit SHA** instead of a version number. On launch (and every six hours while running) the shell compares the payload's recorded `sourceRef` with the upstream master commit; when newer code exists it opens the in-app **Update Center** once per new upstream SHA (persisted under `~/.dsh/desktop/offered-update.json`; not a system notification). The always-visible menu bar item **更新 → 打开更新中心** opens the same window at any time. From there you can check, download, install, and watch progress; after confirmation the job:
 
 1. downloads the upstream tarball (`github.com/{owner}/{repo}/archive/{sha}.tar.gz`),
 2. bootstraps the declared pnpm version on the bundled Node (store isolated under the update work directory, not the user's global pnpm store),
@@ -64,9 +64,10 @@ The old payload directory stays until the next successful update, so a failed bu
 Requirements and caveats:
 
 - **Network** at update time, plus a few minutes of CPU and a few GB of temporary disk for the build tree (removed after a successful swap).
-- **Trust**: an update downloads and builds code from the configured repository and runs its postinstall scripts — the same trust as `git pull && pnpm install` on that repository. The default is `wanghongjian0119/deepseek-harness-desktop`; override with `DSH_DESKTOP_UPDATE_REPO`.
+- **Trust**: an update downloads and builds code from the configured repository and runs its postinstall scripts — the same trust as `git pull && pnpm install` on that repository. The default is the official `deepseek-ai/deepseek-harness` master branch; override with `DSH_DESKTOP_UPDATE_REPO`.
 - The install/build subprocess uses a pnpm store under the update work directory, not `~/.local/share/pnpm`. A root-owned global store (from `sudo pnpm`) therefore cannot fail the job with EACCES.
-- Updates are **prompted, not silent**: the notification asks before the multi-minute rebuild starts.
+- Updates are **prompted inside the Update Center, not silent**: the multi-minute rebuild starts only after you click **下载并安装**.
+- The Update Center lets you pick an **npm registry mirror** (npmmirror / Tencent / Huawei / official) before install; download and install steps stream detail into the log panel from the start.
 
 ## The deploy root
 

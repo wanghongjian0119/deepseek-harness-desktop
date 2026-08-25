@@ -9,25 +9,28 @@
  * fails to boot surfaces an actionable error dialog with a restart path.
  *
  * Source self-update: on launch (and every few hours) the shell compares the
- * payload's recorded source ref with the upstream master commit; when newer
- * code exists it notifies the user, and on confirmation downloads the source,
- * rebuilds the payload, and restarts the backend with the new version. The
- * Electron shell itself is not updated — only the bundled backend.
+ * payload's recorded source ref with the upstream master commit. When newer
+ * code exists it opens the in-app Update Center (not a system notification).
+ * From there the user can check, download, install, and watch progress; on
+ * success the backend restarts on the new payload. The Electron shell itself
+ * is not updated — only the bundled backend.
  *
  * The renderer is the plain remote web app over `http://127.0.0.1`; the
  * window is a sandboxed, nodeIntegration-free shell around it.
  * @module @deepseek-ai/dsh-desktop/main
  */
 
-import { app, dialog, shell, BrowserWindow, Menu, Notification } from 'electron'
+import { app, dialog, shell, BrowserWindow, Menu } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { PayloadManifest } from './payload.ts'
 import { dshHome, readPayloadManifest, resolvePayloadRoot } from './payload.ts'
 import { launchServer, type ServerHandle } from './server-launcher.ts'
-import { checkForUpdate, updateRepo } from './updater/update-check.ts'
-import { runSourceUpdate, type UpdateProgress } from './updater/update-job.ts'
+import { shouldOpenExternally } from './external-url.ts'
+import { UpdateCenter } from './updater/update-center.ts'
+import { checkForUpdate } from './updater/update-check.ts'
+import { readOfferedUpdateSha, writeOfferedUpdateSha } from './updater/offered-update.ts'
 
 /** Launcher flag that switches payload resolution to development mode. */
 const DEV_FLAG = '--dev'
@@ -43,15 +46,6 @@ const LOADING_HTML = `data:text/html;charset=utf-8,${encodeURIComponent(
   + '</style></head><body>Starting DeepSeek Harness&hellip;</body></html>',
 )}`
 
-/** Inline progress page shown while an update builds. */
-const PROGRESS_HTML = `data:text/html;charset=utf-8,${encodeURIComponent(
-  '<!doctype html><html><head><meta charset="utf-8"><style>'
-  + 'html,body{height:100%;margin:0;background:#0d1117;color:#c9d1d9;font-family:system-ui,sans-serif}'
-  + 'body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px}'
-  + '#status{font-size:14px;text-align:center;white-space:pre-wrap;word-break:break-all}'
-  + '</style></head><body><div id="status">准备更新&hellip;</div></body></html>',
-)}`
-
 let mainWindow: BrowserWindow | undefined
 let server: ServerHandle | undefined
 let appOrigin = ''
@@ -60,9 +54,19 @@ let stopping = false
 let backendIntentionalStop = false
 /** The active payload (root + manifest), refreshed on every backend start. */
 let activePayload: { root: string; manifest: PayloadManifest } | undefined
-/** Guards against overlapping update prompts and runs. */
-let updateBusy = false
-let progressWindow: BrowserWindow | undefined
+/** True while a background availability check is in flight. */
+let updateCheckBusy = false
+/** Latest SHA already auto-offered in the Update Center (memory + `$DSH_HOME/desktop/offered-update.json`). */
+let offeredUpdateSha: string | undefined
+
+const updateCenter = new UpdateCenter({
+  getPayload: () => activePayload,
+  getParentWindow: () => mainWindow,
+  restartBackend: async () => {
+    await stopBackend()
+    await startBackend()
+  },
+})
 
 /**
  * The app icon for the window/taskbar: the packaged `Resources/icon.png`
@@ -85,7 +89,9 @@ function createWindow(): BrowserWindow {
     minWidth: 960,
     minHeight: 600,
     show: false,
-    autoHideMenuBar: true,
+    // Keep the menu bar visible: Linux users otherwise only get Alt-to-reveal,
+    // which hides Update Center behind an invisible chrome affordance.
+    autoHideMenuBar: false,
     title: 'DeepSeek Harness',
     ...(icon !== undefined ? { icon } : {}),
     webPreferences: {
@@ -96,7 +102,7 @@ function createWindow(): BrowserWindow {
   })
   win.once('ready-to-show', () => { win.show() })
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) void shell.openExternal(url)
+    if (shouldOpenExternally(url, appOrigin)) void shell.openExternal(url)
     return { action: 'deny' }
   })
   win.webContents.on('will-navigate', (event, url) => {
@@ -184,124 +190,44 @@ async function startBackend(): Promise<void> {
   }
 }
 
-// ── source self-update ──────────────────────────────────────────────────────
-
-/** Small update-progress window; text is set via executeJavaScript. */
-function createProgressWindow(): BrowserWindow {
-  const win = new BrowserWindow({
-    width: 460,
-    height: 180,
-    resizable: false,
-    autoHideMenuBar: true,
-    title: '更新 DeepSeek Harness',
-    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
-  })
-  void win.loadURL(PROGRESS_HTML)
-  progressWindow = win
-  win.once('closed', () => { progressWindow = undefined })
-  return win
-}
-
-/** Show a line in the progress window, if one is open. */
-function setProgressText(text: string): void {
-  progressWindow?.webContents.executeJavaScript(
-    `document.getElementById('status').textContent = ${JSON.stringify(text)}`,
-  ).catch(() => {})
-}
-
-/** Check upstream once and, if newer code exists, offer the update. */
+/** Check upstream once and open the Update Center when newer code exists. */
 async function scheduleUpdateCheck(): Promise<void> {
-  if (updateBusy || activePayload?.manifest.sourceRef === undefined) return
+  if (updateCheckBusy || activePayload?.manifest.sourceRef === undefined) return
+  updateCheckBusy = true
   try {
+    const home = dshHome()
+    if (offeredUpdateSha === undefined) offeredUpdateSha = readOfferedUpdateSha(home)
     const result = await checkForUpdate({ currentSha: activePayload.manifest.sourceRef })
-    if (result.available) {
-      const notification = new Notification({
-        title: '发现新版本',
-        body: `官方代码已更新（${result.latestSha?.slice(0, 12)}），点击查看并更新。`,
-      })
-      notification.on('click', () => { void offerUpdate() })
-      notification.show()
+    if (result.available && result.latestSha !== undefined && result.latestSha !== offeredUpdateSha) {
+      offeredUpdateSha = result.latestSha
+      writeOfferedUpdateSha(result.latestSha, home)
+      updateCenter.open({ autoCheck: true })
     }
   } catch (error) {
     // A failed check (offline, API limit) is not an error surface; the next
     // interval or a manual menu click retries.
     console.log('[update] check failed:', error instanceof Error ? error.message : String(error))
-  }
-}
-
-/** Ask the user whether to update now; on confirmation run the update. */
-async function offerUpdate(): Promise<void> {
-  if (updateBusy || activePayload === undefined) return
-  updateBusy = true
-  try {
-    const currentSha = activePayload.manifest.sourceRef
-    const latest = await checkForUpdate(currentSha === undefined ? {} : { currentSha })
-    if (!latest.available || latest.latestSha === undefined) return
-    const { response } = await dialog.showMessageBox(mainWindow ?? createWindow(), {
-      type: 'question',
-      title: '发现新版本',
-      message: `官方代码已更新到 ${latest.latestSha.slice(0, 12)}`,
-      detail: '将下载最新源码并重新构建后端（需要联网，通常需要几分钟，完成后应用会自动重启）。期间可以继续使用当前版本。',
-      buttons: ['立即更新', '稍后'],
-      defaultId: 0,
-      cancelId: 1,
-    })
-    if (response !== 0) return
-    await startUpdate(latest.latestSha)
-  } catch (error) {
-    await dialog.showMessageBox(mainWindow ?? createWindow(), {
-      type: 'error',
-      title: '检查更新失败',
-      message: String(error),
-    })
   } finally {
-    updateBusy = false
+    updateCheckBusy = false
   }
 }
 
-/** Download, build, activate, and switch to a new payload. */
-async function startUpdate(targetSha: string): Promise<void> {
-  const current = activePayload
-  if (current === undefined) return
-  const progress = createProgressWindow()
-  try {
-    const result = await runSourceUpdate({
-      repo: updateRepo(),
-      targetSha,
-      home: dshHome(),
-      workDir: join(dshHome(), 'desktop', 'update-work'),
-      currentNodeBinary: join(current.root, current.manifest.nodeBinary),
-      onProgress: (p: UpdateProgress) => { setProgressText(p.detail) },
-      onLog: (line) => { console.log('[update]', line) },
-    })
-    setProgressText('更新完成，正在重启…')
-    await stopBackend()
-    await startBackend()
-    new Notification({ title: '更新完成', body: `已切换到 ${result.sourceRef.slice(0, 12)}。` }).show()
-  } catch (error) {
-    await dialog.showMessageBox(mainWindow ?? progress, {
-      type: 'error',
-      title: '更新失败',
-      message: '保留当前版本。\n\n' + String(error),
-    })
-  } finally {
-    if (!progress.isDestroyed()) progress.close()
-  }
-}
-
-/** Build the minimal application menu: update control plus quit. */
+/** Build the always-visible application menu. */
 function installMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
     {
-      label: 'DeepSeek Harness',
+      label: '文件',
       submenu: [
-        { label: '检查更新…', click: () => { void offerUpdate() } },
-        { type: 'separator' },
         { role: 'quit', label: '退出' },
       ],
     },
-  ]
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+    {
+      label: '更新',
+      submenu: [
+        { label: '打开更新中心', accelerator: 'CmdOrCtrl+U', click: () => { updateCenter.open({ autoCheck: true }) } },
+      ],
+    },
+  ]))
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -315,8 +241,11 @@ if (!app.requestSingleInstanceLock()) {
   })
   void app.whenReady().then(() => {
     app.setAppUserModelId('ai.deepseek.harness')
+    updateCenter.installIpc()
     installMenu()
     mainWindow = createWindow()
+    mainWindow.setAutoHideMenuBar(false)
+    mainWindow.setMenuBarVisibility(true)
     void mainWindow.loadURL(LOADING_HTML)
     void startBackend()
     setInterval(() => { void scheduleUpdateCheck() }, UPDATE_CHECK_INTERVAL_MS)

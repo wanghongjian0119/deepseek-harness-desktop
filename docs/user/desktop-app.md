@@ -34,9 +34,9 @@ The first launch creates the default harness home (`~/.dsh`) and configures the 
 
 ## Auto-update
 
-The app checks the official repository on launch (and every six hours while running). When the upstream code has moved ahead of the bundled version, a notification appears; confirm it and the app downloads the latest source, rebuilds the backend (a few minutes, with a progress window), and restarts with the new version. A failed update keeps the current version. Requires network access and a few GB of free disk during the rebuild.
+The app checks the configured source repository on launch (and every six hours while running). When upstream code has moved ahead of the bundled version, it opens the in-app **Update Center** once per new upstream SHA (persisted under `~/.dsh/desktop/offered-update.json`) — not a system notification. There you can check for updates, download and install, and watch progress; the job rebuilds the backend (a few minutes) and restarts with the new version. A failed update keeps the current version. Requires network access and a few GB of free disk during the rebuild.
 
-The update builds code from the official `deepseek-ai/deepseek-harness` repository — the same trust as pulling and installing that repository yourself. The bundled Electron shell itself is not updated, only the backend.
+The default update source is the official `deepseek-ai/deepseek-harness` master branch (override with `DSH_DESKTOP_UPDATE_REPO`) — the same trust as pulling and installing that repository yourself. The bundled Electron shell itself is not updated, only the backend. Use the always-visible menu **更新 → 打开更新中心** at any time.
 
 ## Platform notes
 

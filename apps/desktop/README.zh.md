@@ -21,7 +21,7 @@ DeepSeek Harness Web GUI 的 Electron 桌面壳，**仅 Linux**（`.deb` 与 App
 - **dsh CLI**——作为闭包一部分部署（`runtime/node_modules/@deepseek-ai/dsh`），其 `lib/` 与随附 `config/agent-presets` 随之携带，profile 模块回退的安装锚点也能自然解析。
 - **前端 dist**——在部署进来的 `@deepseek-ai/dsh-web-frontend` 包内。
 
-后端以 `web --port 0`（OS 分配端口，无冲突）运行，并在 stdout 打印 `dsh web: http://127.0.0.1:<port>` 作为就绪信号；壳解析该行并加载对应 URL。
+后端以 `web --port 0 --no-open`（OS 分配端口，无冲突；壳负责 GUI 窗口，后端不得再打开系统浏览器）运行，并在 stdout 打印 `dsh web: http://127.0.0.1:<port>` 作为就绪信号；壳解析该行并加载对应 URL。
 
 ## 开发
 
@@ -33,7 +33,7 @@ pnpm --filter @deepseek-ai/dsh-desktop run build:payload  # assemble resources/d
 pnpm --filter @deepseek-ai/dsh-desktop run dev            # launch Electron against the staged payload
 ```
 
-`build:payload` 以无密钥冒烟收尾：用临时 `$DSH_HOME` 启动暂存后端，断言返回的 index 携带 `window.__DSH_BOOT__` manifest——与窗口等待的就绪信号一致。
+`build:payload` 以无密钥冒烟收尾：用临时 `$DSH_HOME` 启动暂存后端，断言返回的 index 携带 `__DSH_BOOT__` boot manifest（`window.__DSH_BOOT__` 或 `globalThis["__DSH_BOOT__"]`）——与窗口等待的就绪信号一致。
 
 想用自定义载荷：`DSH_DESKTOP_PAYLOAD=/path/to/dsh pnpm --filter @deepseek-ai/dsh-desktop run dev`。
 
@@ -51,7 +51,7 @@ Linux 备注：
 
 ## 自动更新（源码级）
 
-官方仓库不发布安装包——只有 `master` 分支——所以应用跟踪的是**上游 master 的 commit SHA** 而非版本号。每次启动（以及运行期间每 6 小时）壳会把载荷记录的 `sourceRef` 与上游 master 提交对比；发现新代码时弹出通知，确认后：
+官方仓库不发布安装包——只有 `master` 分支——所以应用跟踪的是**上游 master 的 commit SHA** 而非版本号。每次启动（以及运行期间每 6 小时）壳会把载荷记录的 `sourceRef` 与上游 master 提交对比；发现新代码时对每个新的上游 SHA **只自动打开一次**应用内**更新中心**（记录在 `~/.dsh/desktop/offered-update.json`；不使用系统通知）。窗口顶部常显菜单 **更新 → 打开更新中心** 可随时打开同一窗口。在窗口内可检查、下载、安装并查看进度；确认后任务会：
 
 1. 下载上游源码包（`github.com/{owner}/{repo}/archive/{sha}.tar.gz`），
 2. 用内置 Node 引导声明的 pnpm 版本（store 隔离在更新工作目录，不使用用户全局 pnpm store），
@@ -64,9 +64,10 @@ Linux 备注：
 要求与注意事项：
 
 - **联网**（更新时），外加几分钟 CPU 与数 GB 临时磁盘（构建树，成功后清理）。
-- **信任**：更新会从配置的仓库下载并构建代码、执行其 postinstall 脚本——等同于对该仓库执行 `git pull && pnpm install`。默认是 `wanghongjian0119/deepseek-harness-desktop`，可用 `DSH_DESKTOP_UPDATE_REPO` 覆盖。
+- **信任**：更新会从配置的仓库下载并构建代码、执行其 postinstall 脚本——等同于对该仓库执行 `git pull && pnpm install`。默认是官方 `deepseek-ai/deepseek-harness` 的 master 分支，可用 `DSH_DESKTOP_UPDATE_REPO` 覆盖。
 - 安装/构建子进程使用更新工作目录下的 pnpm store，而不是 `~/.local/share/pnpm`。因此 root 拥有的全局 store（来自 `sudo pnpm`）不会以 EACCES 让任务失败。
-- 更新是**提示式而非静默式**：通知需用户确认后才开始数分钟的重新构建。
+- 更新是**在更新中心内确认而非静默**：只有点击 **下载并安装** 后才会开始数分钟的重新构建。
+- 更新中心可在安装前选择 **npm 镜像**（npmmirror / 腾讯云 / 华为云 / 官方）；下载与安装从一开始就会把详情写入日志区。
 
 ## Deploy root
 

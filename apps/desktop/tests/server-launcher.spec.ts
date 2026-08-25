@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { Readable } from 'node:stream'
 import { describe, expect, it, vi } from 'vitest'
-import { DEFAULT_STOP_GRACE_MS, stopServer, waitForReadyUrl, type SpawnedChild } from '../src/server-launcher.ts'
+import { DEFAULT_STOP_GRACE_MS, launchServer, stopServer, waitForReadyUrl, type SpawnedChild } from '../src/server-launcher.ts'
 
 /** An async line source from chunks, with an optional completion hook. */
 async function* linesFrom(chunks: string[]): AsyncGenerator<string> {
@@ -120,5 +120,44 @@ describe('stopServer', () => {
     const child = fakeChild(new EventEmitter())
     await stopServer(child, 20)
     expect(child.kills).toEqual(['SIGTERM', 'SIGKILL'])
+  })
+})
+
+describe('launchServer', () => {
+  it('spawns dsh web with --no-open so the system browser stays closed', async () => {
+    const emitter = new EventEmitter()
+    const child = fakeChild(emitter)
+    child.stdout = Readable.from(['dsh web: http://127.0.0.1:1\n'])
+    let capturedArgs: string[] | undefined
+    const handle = launchServer({
+      nodeBinary: '/fake/node',
+      cliEntry: '/fake/cli.js',
+      spawnChild: (_command, args) => {
+        capturedArgs = args
+        return child
+      },
+    })
+    expect(capturedArgs).toEqual(['/fake/cli.js', 'web', '--port', '0', '--no-open'])
+    await expect(handle.url).resolves.toBe('http://127.0.0.1:1')
+  })
+
+  it('keeps --no-open ahead of extraArgs', async () => {
+    const emitter = new EventEmitter()
+    const child = fakeChild(emitter)
+    child.stdout = Readable.from(['dsh web: http://127.0.0.1:2\n'])
+    let capturedArgs: string[] | undefined
+    const handle = launchServer({
+      nodeBinary: '/fake/node',
+      cliEntry: '/fake/cli.js',
+      extraArgs: ['--profile', 'web'],
+      spawnChild: (_command, args) => {
+        capturedArgs = args
+        return child
+      },
+    })
+    expect(capturedArgs).toEqual([
+      '/fake/cli.js', 'web', '--port', '0', '--no-open', '--profile', 'web',
+    ])
+    await expect(handle.url).resolves.toBe('http://127.0.0.1:2')
   })
 })

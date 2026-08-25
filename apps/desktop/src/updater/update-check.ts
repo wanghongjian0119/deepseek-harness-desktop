@@ -5,17 +5,17 @@
  * the `master` branch — so the update signal is the upstream master commit
  * SHA compared against the running payload's recorded `sourceRef`. The check
  * uses the public GitHub REST API; the repo is overridable through
- * `$DSH_DESKTOP_UPDATE_REPO` (e.g. another fork), and the API base is injectable
+ * `$DSH_DESKTOP_UPDATE_REPO` (e.g. a fork), and the API base is injectable
  * for tests.
  * @module @deepseek-ai/dsh-desktop/update-check
  */
 
-/** The community Linux-desktop fork that ships this shell. */
-export const DEFAULT_UPDATE_REPO = 'wanghongjian0119/deepseek-harness-desktop'
+/** The official upstream source repository. */
+export const DEFAULT_UPDATE_REPO = 'deepseek-ai/deepseek-harness'
 
 /** Options for {@link checkForUpdate}. */
 export interface CheckForUpdateOptions {
-  /** `owner/repo` to watch; defaults to the community Linux-desktop fork. */
+  /** `owner/repo` to watch; defaults to the official upstream repository. */
   repo?: string
   /** The running payload's source ref; `undefined` disables the comparison. */
   currentSha?: string

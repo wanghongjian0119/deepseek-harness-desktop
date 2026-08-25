@@ -35,8 +35,8 @@ describe('checkForUpdate', () => {
     )
   })
 
-  it('defaults to the community Linux-desktop fork', () => {
-    expect(DEFAULT_UPDATE_REPO).toBe('wanghongjian0119/deepseek-harness-desktop')
+  it('defaults to the official upstream repository', () => {
+    expect(DEFAULT_UPDATE_REPO).toBe('deepseek-ai/deepseek-harness')
     expect(updateRepo({})).toBe(DEFAULT_UPDATE_REPO)
     expect(updateRepo({ DSH_DESKTOP_UPDATE_REPO: 'fork/repo' })).toBe('fork/repo')
   })

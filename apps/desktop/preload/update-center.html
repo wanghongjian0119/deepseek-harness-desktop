@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:;">
+<title>更新中心</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #ffffff;
+    --panel: #f6f8fa;
+    --border: #d0d7de;
+    --text: #1f2328;
+    --muted: #656d76;
+    --accent: #1a7f37;
+    --accent-hover: #2da44e;
+    --warn: #9a6700;
+    --danger: #cf222e;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+    padding: 20px 22px 16px;
+    gap: 14px;
+  }
+  h1 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 650;
+  }
+  .sub {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: grid;
+    gap: 8px;
+  }
+  .row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: baseline;
+  }
+  .label { color: var(--muted); flex-shrink: 0; }
+  .value {
+    font-family: var(--mono);
+    font-size: 12px;
+    word-break: break-all;
+    text-align: right;
+  }
+  select {
+    max-width: 70%;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #ffffff;
+    color: var(--text);
+    font: inherit;
+    padding: 4px 8px;
+  }
+  select:disabled { opacity: 0.55; }
+  .status {
+    font-size: 13px;
+    min-height: 1.4em;
+  }
+  .status.ok { color: var(--accent); }
+  .status.warn { color: var(--warn); }
+  .status.err { color: var(--danger); }
+  .status.busy { color: var(--text); }
+  .actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  button {
+    appearance: none;
+    border: 1px solid var(--border);
+    background: #ffffff;
+    color: var(--text);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: #f3f4f6; }
+  button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #ffffff;
+    font-weight: 600;
+  }
+  button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+  .bar {
+    height: 8px;
+    background: #eaeef2;
+    border-radius: 999px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .bar > i {
+    display: block;
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #1a7f37, #2da44e);
+    transition: width 0.25s ease;
+  }
+  .log {
+    flex: 1;
+    min-height: 140px;
+    max-height: 220px;
+    overflow: auto;
+    background: #f6f8fa;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font: 11px/1.4 var(--mono);
+    color: #424a53;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+</style>
+</head>
+<body>
+  <div>
+    <h1>更新中心</h1>
+    <div class="sub">检查、下载并安装后端更新</div>
+  </div>
+
+  <div class="card">
+    <div class="row"><span class="label">仓库</span><span class="value" id="repo">—</span></div>
+    <div class="row"><span class="label">当前版本</span><span class="value" id="current">—</span></div>
+    <div class="row"><span class="label">最新版本</span><span class="value" id="latest">—</span></div>
+    <div class="row">
+      <span class="label">npm 镜像</span>
+      <select id="registry" aria-label="npm 镜像"></select>
+    </div>
+    <div class="status busy" id="status">正在读取状态…</div>
+  </div>
+
+  <div class="actions">
+    <button type="button" id="checkBtn">检查更新</button>
+    <button type="button" class="primary" id="installBtn" disabled>下载并安装</button>
+  </div>
+
+  <div class="bar" aria-hidden="true"><i id="progress"></i></div>
+  <div class="log" id="log"></div>
+
+<script>
+(() => {
+  const api = window.dshUpdate
+  const REGISTRY_KEY = 'dsh-desktop-npm-mirror'
+  const el = {
+    repo: document.getElementById('repo'),
+    current: document.getElementById('current'),
+    latest: document.getElementById('latest'),
+    registry: document.getElementById('registry'),
+    status: document.getElementById('status'),
+    checkBtn: document.getElementById('checkBtn'),
+    installBtn: document.getElementById('installBtn'),
+    progress: document.getElementById('progress'),
+    log: document.getElementById('log'),
+  }
+
+  const stagePct = {
+    idle: 0,
+    checking: 8,
+    'download-source': 18,
+    extract: 28,
+    install: 55,
+    build: 78,
+    assemble: 90,
+    finalize: 97,
+    done: 100,
+    error: 100,
+  }
+
+  function shortSha(sha) {
+    if (!sha) return '—'
+    return sha.length > 12 ? sha.slice(0, 12) : sha
+  }
+
+  function setStatus(text, kind) {
+    el.status.textContent = text
+    el.status.className = 'status ' + (kind || 'busy')
+  }
+
+  function setProgress(stage) {
+    el.progress.style.width = (stagePct[stage] ?? 0) + '%'
+  }
+
+  function appendLog(line) {
+    if (!line) return
+    el.log.textContent += (el.log.textContent ? '\n' : '') + line
+    el.log.scrollTop = el.log.scrollHeight
+  }
+
+  function fillMirrors(mirrors, selectedId) {
+    const saved = localStorage.getItem(REGISTRY_KEY)
+    const preferred = saved || selectedId
+    el.registry.innerHTML = ''
+    for (const mirror of mirrors || []) {
+      const opt = document.createElement('option')
+      opt.value = mirror.id
+      opt.textContent = mirror.label + ' — ' + mirror.url
+      if (mirror.id === preferred) opt.selected = true
+      el.registry.appendChild(opt)
+    }
+  }
+
+  function applyState(state) {
+    el.repo.textContent = state.repo || '—'
+    el.current.textContent = shortSha(state.currentSha)
+    el.latest.textContent = shortSha(state.latestSha)
+    if (state.mirrors && state.mirrors.length && el.registry.options.length === 0) {
+      fillMirrors(state.mirrors, state.registryId)
+    } else if (state.registryId && !el.registry.disabled) {
+      el.registry.value = localStorage.getItem(REGISTRY_KEY) || state.registryId
+    }
+    setProgress(state.phase)
+    el.checkBtn.disabled = !!state.busy
+    el.installBtn.disabled = !(state.available && !state.busy)
+    el.registry.disabled = !!state.busy
+    if (state.message) setStatus(state.message, state.messageKind || 'busy')
+  }
+
+  async function refresh() {
+    const state = await api.getState()
+    fillMirrors(state.mirrors, state.registryId)
+    applyState(state)
+  }
+
+  el.registry.addEventListener('change', () => {
+    localStorage.setItem(REGISTRY_KEY, el.registry.value)
+  })
+
+  el.checkBtn.addEventListener('click', async () => {
+    el.checkBtn.disabled = true
+    setStatus('正在检查更新…', 'busy')
+    setProgress('checking')
+    appendLog('开始检查更新…')
+    try {
+      const state = await api.check()
+      applyState(state)
+      appendLog(state.message || '检查完成')
+    } catch (error) {
+      setStatus(String(error && error.message ? error.message : error), 'err')
+      el.checkBtn.disabled = false
+    }
+  })
+
+  el.installBtn.addEventListener('click', async () => {
+    el.installBtn.disabled = true
+    el.checkBtn.disabled = true
+    el.registry.disabled = true
+    el.log.textContent = ''
+    const registryId = el.registry.value
+    localStorage.setItem(REGISTRY_KEY, registryId)
+    setStatus('开始下载并安装…', 'busy')
+    appendLog('开始下载并安装…')
+    try {
+      const state = await api.install({ registryId })
+      applyState(state)
+    } catch (error) {
+      setStatus(String(error && error.message ? error.message : error), 'err')
+      setProgress('error')
+      el.checkBtn.disabled = false
+      el.registry.disabled = false
+    }
+  })
+
+  api.onEvent((event) => {
+    if (event.type === 'state') applyState(event.state)
+    if (event.type === 'log') appendLog(event.line)
+    if (event.type === 'progress') {
+      setProgress(event.stage)
+      if (event.detail) setStatus(event.detail, 'busy')
+    }
+  })
+
+  refresh().catch((error) => {
+    setStatus(String(error && error.message ? error.message : error), 'err')
+  })
+})()
+</script>
+</body>
+</html>
