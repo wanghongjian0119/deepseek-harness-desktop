@@ -39,7 +39,7 @@ The costs: every payload build downloads its own Node runtime and must run on th
 ## Verification
 
 - `verify-runtime-closure --manifest apps/desktop/deploy-root/package.json` passes: 192 workspace packages form a closed graph.
-- `scripts/assemble-payload.ts` ends with a keyless boot smoke: it runs the staged CLI over a scratch `$DSH_HOME` with `--port 0`, waits for the readiness line, and asserts `GET /` carries `window.__DSH_BOOT__`.
+- `scripts/assemble-payload.ts` ends with a keyless boot smoke: it runs the staged CLI over a scratch `$DSH_HOME` with `--port 0`, waits for the readiness line, and asserts `GET /` carries the `__DSH_BOOT__` boot manifest (`window.__DSH_BOOT__` or upstream `globalThis["__DSH_BOOT__"]`).
 - Unit tests cover the readiness-line parser, the readiness wait (URL line, early exit, stream end, timeout), stop escalation, and payload resolution.
 - Reproduce: `pnpm run build`, `pnpm install`, then `pnpm --filter @deepseek-ai/dsh-desktop run build:payload` (network: Node runtime download) and `pnpm --filter @deepseek-ai/dsh-desktop run dev`.
 

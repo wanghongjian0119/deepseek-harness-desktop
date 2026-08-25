@@ -743,6 +743,7 @@
     },
     "apps/desktop": {
       "entry": [
+        "src/main.ts",
         "scripts/*.ts",
         "tests/**/*.spec.ts"
       ],

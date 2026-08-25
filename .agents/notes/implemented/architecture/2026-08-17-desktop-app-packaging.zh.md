@@ -39,7 +39,7 @@ Web GUI 只能通过 `dsh web`（终端命令，打印 `http://127.0.0.1:3080`�
 ## 验证
 
 - `verify-runtime-closure --manifest apps/desktop/deploy-root/package.json` 通过：192 个 workspace 包构成闭合图。
-- `scripts/assemble-payload.ts` 以无密钥启动冒烟收尾：用临时 `$DSH_HOME` 以 `--port 0` 运行暂存 CLI，等待就绪行，断言 `GET /` 携带 `window.__DSH_BOOT__`。
+- `scripts/assemble-payload.ts` 以无密钥启动冒烟收尾：用临时 `$DSH_HOME` 以 `--port 0` 运行暂存 CLI，等待就绪行，断言 `GET /` 携带 `__DSH_BOOT__` boot manifest（`window.__DSH_BOOT__` 或上游 `globalThis["__DSH_BOOT__"]`）。
 - 单元测试覆盖就绪行解析、就绪等待（URL 行、提前退出、流结束、超时）、停止升级与载荷解析。
 - 复现：`pnpm run build`、`pnpm install`，然后 `pnpm --filter @deepseek-ai/dsh-desktop run build:payload`（联网下载 Node 运行时）与 `pnpm --filter @deepseek-ai/dsh-desktop run dev`。
 

@@ -13,6 +13,7 @@ directories:
   buildResources: build
 files:
   - lib/**/*
+  - preload/**/*
   - package.json
 extraResources:
   - from: resources/dsh

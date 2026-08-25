@@ -7,7 +7,7 @@
  * `runtime/node_modules/@deepseek-ai/dsh`), and the built frontend dist
  * (shipped inside the deployed `dsh-web-frontend`). It ends with a keyless
  * boot smoke that runs the staged CLI over a scratch `$DSH_HOME` and asserts
- * the served index carries the `window.__DSH_BOOT__` manifest — the same
+ * the served index carries the `__DSH_BOOT__` boot manifest — the same
  * readiness signal the desktop window waits for. The smoke is the update
  * gate: a payload that cannot boot is never activated.
  *
@@ -36,6 +36,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { chmod, cp, lstat, mkdir, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, sep } from 'node:path'
 import { launchServer, DEFAULT_READY_TIMEOUT_MS } from './server-launcher.ts'
+import { indexCarriesBootManifest } from './boot-manifest.ts'
 import { PAYLOAD_FORMAT } from './payload.ts'
 
 /** The dependency-only manifest whose closure is the payload. */
@@ -279,8 +280,8 @@ async function runSmoke(payload: string, smokeHome: string): Promise<void> {
     const response = await fetch(`${url}/`)
     if (!response.ok) throw new Error(`assemble-payload: smoke index returned HTTP ${response.status}`)
     const html = await response.text()
-    if (!html.includes('window.__DSH_BOOT__')) {
-      throw new Error('assemble-payload: smoke index does not carry the window.__DSH_BOOT__ manifest; the GUI cannot boot')
+    if (!indexCarriesBootManifest(html)) {
+      throw new Error('assemble-payload: smoke index does not carry the __DSH_BOOT__ boot manifest; the GUI cannot boot')
     }
     log(`assemble-payload: smoke passed — ${url} serves the boot manifest`)
   } finally {
@@ -313,8 +314,8 @@ export async function assemblePayload(options: AssemblePayloadOptions): Promise<
   verifyBuiltArtifacts(sourceRoot)
   if (!existsSync(join(sourceRoot, 'apps/desktop/deploy-root/package.json'))) {
     throw new Error(
-      'assemble-payload: the source checkout has no apps/desktop/deploy-root; an update builds the fetched '
-      + 'upstream source, and the desktop packaging must be merged upstream before a source update can produce a payload',
+      'assemble-payload: the source checkout has no apps/desktop/deploy-root/package.json; '
+      + 'call ensureDesktopDeployRoot(sourceRoot) before assemblePayload when building upstream without apps/desktop',
     )
   }
   await run('verify runtime closure', pnpmArgs[0] ?? 'pnpm', [
