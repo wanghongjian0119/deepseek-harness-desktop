@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { accessSync, constants, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { accessSync, constants, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -12,6 +13,7 @@ import {
   pnpmRegistryArgs,
   prependPathEntry,
   rewriteLockfileNpmjsHosts,
+  tryLocalGitSource,
   writeCheckoutNpmrc,
 } from '../src/updater/update-job.ts'
 
@@ -171,6 +173,84 @@ describe('writeCheckoutNpmrc / rewriteLockfileNpmjsHosts', () => {
       expect(readFileSync(join(root, 'pnpm-lock.yaml'), 'utf8')).toContain('registry.npmmirror.com')
       expect(readFileSync(join(root, 'pnpm-lock.yaml'), 'utf8')).not.toContain('registry.npmjs.org')
       expect(await rewriteLockfileNpmjsHosts(root, 'https://registry.npmjs.org')).toBe(0)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+function git(cwd: string, args: string[], env: Record<string, string> = {}): string {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      ...env,
+      GIT_AUTHOR_NAME: 'test',
+      GIT_AUTHOR_EMAIL: 'test@example.com',
+      GIT_COMMITTER_NAME: 'test',
+      GIT_COMMITTER_EMAIL: 'test@example.com',
+    },
+  }).trim()
+}
+
+describe('tryLocalGitSource', () => {
+  it('fetches the target sha from a matching local repo and checks out a worktree', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-git-src-'))
+    try {
+      const upstream = join(root, 'upstream.git')
+      git(root, ['init', '--bare', upstream])
+      const local = join(root, 'local')
+      git(root, ['clone', upstream, local])
+      writeFileSync(join(local, 'hello.txt'), 'hi\n')
+      git(local, ['add', '.'])
+      git(local, ['commit', '-m', 'c1'])
+      git(local, ['branch', '-M', 'master'])
+      git(local, ['push', '-u', 'origin', 'master'])
+      const sha = git(local, ['rev-parse', 'HEAD'])
+      // 让 origin URL 表现为 GitHub 形态,insteadOf 指回本地 upstream,全程离线。
+      git(local, ['remote', 'set-url', 'origin', 'https://github.com/deepseek-ai/deepseek-harness.git'])
+      git(local, ['config', `url.${upstream}.insteadOf`, 'https://github.com/deepseek-ai/deepseek-harness.git'])
+      const workDir = join(root, 'work')
+      mkdirSync(workDir)
+      const srcRoot = await tryLocalGitSource({
+        repo: 'deepseek-ai/deepseek-harness',
+        targetSha: sha,
+        workDir,
+        repoDir: local,
+        env: { PATH: '/usr/bin:/bin', HOME: root },
+        onLog: () => {},
+        onProgress: () => {},
+      })
+      expect(srcRoot).toBe(join(workDir, 'tree'))
+      expect(readFileSync(join(srcRoot, 'hello.txt'), 'utf8')).toBe('hi\n')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('returns undefined when the origin does not match the watched repo', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-git-mismatch-'))
+    try {
+      const local = join(root, 'repo')
+      git(root, ['init', '-b', 'master', local])
+      writeFileSync(join(local, 'x.txt'), 'x\n')
+      git(local, ['add', '.'])
+      git(local, ['commit', '-m', 'c1'])
+      git(local, ['remote', 'add', 'origin', 'https://github.com/other/repo.git'])
+      const sha = git(local, ['rev-parse', 'HEAD'])
+      const workDir = join(root, 'work')
+      mkdirSync(workDir)
+      const srcRoot = await tryLocalGitSource({
+        repo: 'deepseek-ai/deepseek-harness',
+        targetSha: sha,
+        workDir,
+        repoDir: local,
+        env: { PATH: '/usr/bin:/bin', HOME: root },
+        onLog: () => {},
+        onProgress: () => {},
+      })
+      expect(srcRoot).toBeUndefined()
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

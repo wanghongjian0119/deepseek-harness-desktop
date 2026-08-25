@@ -41,6 +41,11 @@ export function parseGitRemoteRepo(remoteUrl: string): string | undefined {
   return undefined
 }
 
+/** Compare repo strings case-insensitively, ignoring a trailing `.git`. */
+function normalizeRepo(repo: string): string {
+  return repo.toLowerCase().replace(/\.git$/, '')
+}
+
 /** pnpm fallback when the source manifest has no packageManager field. */
 export const DEFAULT_PNPM_VERSION = '11.7.0'
 
@@ -379,6 +384,92 @@ async function extractTarball(
     throw new Error(`update: source archive did not extract to a single directory (found ${entries.length} entries)`)
   }
   return join(extractDir, entries[0] as string)
+}
+
+/** Environment variable naming a local repository to build from instead of a GitHub tarball. */
+export const SOURCE_REPO_DIR_ENV = 'DSH_DESKTOP_UPDATE_REPO_DIR'
+
+/**
+ * Run one subprocess, collecting stdout; failures reject with the captured output.
+ * @param label - human-readable name for error messages.
+ * @param command - executable to spawn.
+ * @param args - command arguments.
+ * @param cwd - working directory.
+ * @param env - child environment.
+ * @returns the captured stdout.
+ */
+function runOutput(
+  label: string,
+  command: string,
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
+  return new Promise<string>((resolvePromise, reject) => {
+    const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'ignore'], env })
+    let stdout = ''
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8') })
+    child.once('error', (error) => { reject(new Error(`update: ${label} failed to spawn: ${error.message}`)) })
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        resolvePromise(stdout)
+        return
+      }
+      const reason = code === null ? `signal ${signal ?? 'unknown'}` : `exit code ${code}`
+      reject(new Error(`update: ${label} failed (${reason})${stdout.trim() === '' ? '' : `: ${stdout.trim()}`}`))
+    })
+  })
+}
+
+/** Options for {@link tryLocalGitSource}. */
+interface TryLocalGitSourceOptions {
+  repo: string
+  targetSha: string
+  workDir: string
+  repoDir: string
+  env: NodeJS.ProcessEnv
+  onLog: (message: string) => void
+  onProgress: (stage: UpdateStage, detail: string) => void
+}
+
+/**
+ * Obtain a checkout of `targetSha` from a local git repository.
+ *
+ * Runs only when a local repo is configured. Any failure (missing git, not a
+ * repository, origin does not match the watched repo, fetch or worktree
+ * errors) returns undefined so the caller falls back to the GitHub tarball.
+ * The worktree is clean and never touches the developer's working tree.
+ * @param options - watched repo, target SHA, scratch dir, and sinks.
+ * @returns the checkout root, or undefined on any failure.
+ */
+export async function tryLocalGitSource(
+  options: TryLocalGitSourceOptions,
+): Promise<string | undefined> {
+  const { repo, targetSha, workDir, repoDir, env, onLog, onProgress } = options
+  const fallback = (reason: string): undefined => {
+    onLog(`update: local git source unavailable, falling back to tarball: ${reason}`)
+    return undefined
+  }
+  try {
+    await run('check git', 'git', ['--version'], workDir, onLog, env)
+    if (!existsSync(join(repoDir, '.git'))) return fallback(`${repoDir} is not a git repository`)
+    // `git remote get-url` applies the `url.<base>.insteadOf` reverse rewrite
+    // back to the base path; read the stored URL so matching sees the real host.
+    const remote = (await runOutput('git config remote.origin.url', 'git', ['-C', repoDir, 'config', '--get', 'remote.origin.url'], repoDir, env)).trim()
+    const parsed = parseGitRemoteRepo(remote)
+    if (parsed === undefined || normalizeRepo(parsed) !== normalizeRepo(repo)) {
+      return fallback(`origin ${remote} does not match ${repo}`)
+    }
+    onProgress('download-source', '本地仓库 git fetch origin(增量)')
+    await run('git fetch', 'git', ['-C', repoDir, 'fetch', 'origin'], repoDir, onLog, env)
+    await run('verify target commit', 'git', ['-C', repoDir, 'rev-parse', '--verify', `${targetSha}^{commit}`], repoDir, onLog, env)
+    onProgress('extract', `git worktree 检出 ${targetSha.slice(0, 12)}`)
+    const treeDir = join(workDir, 'tree')
+    await run('git worktree add', 'git', ['-C', repoDir, 'worktree', 'add', '--detach', treeDir, targetSha], repoDir, onLog, env)
+    return treeDir
+  } catch (error) {
+    return fallback(error instanceof Error ? error.message : String(error))
+  }
 }
 
 /**
