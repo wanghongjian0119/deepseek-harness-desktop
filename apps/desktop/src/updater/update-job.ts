@@ -137,10 +137,10 @@ export function buildUpdateChildEnv(
     PNPM_HOME: join(workDir, 'pnpm-home'),
     npm_config_store_dir: storeDir ?? join(workDir, 'pnpm-store'),
     // Large binary tarballs (e.g. @openai/codex ≈122MB) exceed pnpm's 60s
-    // default fetch-timeout once concurrent downloads share the link; give
-    // them headroom and cut concurrency so each request keeps bandwidth.
-    npm_config_fetch_timeout: '600000',
-    npm_config_network_concurrency: '4',
+    // default fetch-timeout once concurrent downloads share a slow link; give
+    // them headroom and keep concurrency low so each request keeps bandwidth.
+    npm_config_fetch_timeout: '1800000',
+    npm_config_network_concurrency: '2',
     XDG_CACHE_HOME: join(workDir, 'cache'),
   }
   if (registryUrl !== undefined && registryUrl !== '') {
@@ -218,8 +218,8 @@ export async function ensurePackageManagerShims(
 export async function writeCheckoutNpmrc(sourceRoot: string, registryUrl: string): Promise<void> {
   await writeFile(join(sourceRoot, '.npmrc'), [
     `registry=${registryUrl}`,
-    'fetch-timeout=600000',
-    'network-concurrency=4',
+    'fetch-timeout=1800000',
+    'network-concurrency=2',
     '',
   ].join('\n'))
 }

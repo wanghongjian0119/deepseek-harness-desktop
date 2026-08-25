@@ -82,8 +82,8 @@ describe('buildUpdateChildEnv', () => {
 
   it('injects pnpm fetch timeout and lowered concurrency for large tarballs', () => {
     const env = buildUpdateChildEnv('/tmp/update-work', { PATH: '/usr/bin' })
-    expect(env.npm_config_fetch_timeout).toBe('600000')
-    expect(env.npm_config_network_concurrency).toBe('4')
+    expect(env.npm_config_fetch_timeout).toBe('1800000')
+    expect(env.npm_config_network_concurrency).toBe('2')
   })
 })
 
@@ -167,8 +167,8 @@ describe('writeCheckoutNpmrc / rewriteLockfileNpmjsHosts', () => {
       await writeCheckoutNpmrc(root, 'https://registry.npmmirror.com')
       expect(readFileSync(join(root, '.npmrc'), 'utf8')).toBe([
         'registry=https://registry.npmmirror.com',
-        'fetch-timeout=600000',
-        'network-concurrency=4',
+        'fetch-timeout=1800000',
+        'network-concurrency=2',
         '',
       ].join('\n'))
       expect(await rewriteLockfileNpmjsHosts(root, 'https://registry.npmmirror.com')).toBe(2)
