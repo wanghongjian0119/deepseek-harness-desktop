@@ -469,6 +469,9 @@ export async function tryLocalGitSource(
     await run('verify target commit', 'git', ['-C', repoDir, 'rev-parse', '--verify', `${targetSha}^{commit}`], repoDir, onLog, env)
     onProgress('extract', `git worktree 检出 ${targetSha.slice(0, 12)}`)
     const treeDir = join(workDir, 'tree')
+    // An interrupted update leaves a stale worktree registration behind;
+    // `git worktree prune` clears it so a re-run can add to the same path.
+    await run('git worktree prune', 'git', ['-C', repoDir, 'worktree', 'prune'], repoDir, onLog, env)
     await run('git worktree add', 'git', ['-C', repoDir, 'worktree', 'add', '--detach', treeDir, targetSha], repoDir, onLog, env)
     return treeDir
   } catch (error) {

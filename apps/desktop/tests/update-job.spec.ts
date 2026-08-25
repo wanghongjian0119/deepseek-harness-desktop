@@ -258,6 +258,44 @@ describe('tryLocalGitSource', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  it('recovers from a stale worktree registration at the same path', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-git-stale-'))
+    try {
+      const upstream = join(root, 'upstream.git')
+      git(root, ['init', '--bare', upstream])
+      const local = join(root, 'local')
+      git(root, ['clone', upstream, local])
+      writeFileSync(join(local, 'hello.txt'), 'hi\n')
+      git(local, ['add', '.'])
+      git(local, ['commit', '-m', 'c1'])
+      git(local, ['branch', '-M', 'master'])
+      git(local, ['push', '-u', 'origin', 'master'])
+      const sha = git(local, ['rev-parse', 'HEAD'])
+      git(local, ['remote', 'set-url', 'origin', 'https://github.com/deepseek-ai/deepseek-harness.git'])
+      git(local, ['config', `url.${upstream}.insteadOf`, 'https://github.com/deepseek-ai/deepseek-harness.git'])
+      // 模拟一次中断的更新:注册 worktree 后删除其目录,留下残留注册。
+      const workDir = join(root, 'work')
+      mkdirSync(workDir)
+      git(local, ['worktree', 'add', '--detach', join(workDir, 'tree'), sha])
+      rmSync(workDir, { recursive: true, force: true })
+      mkdirSync(workDir)
+      const srcRoot = await tryLocalGitSource({
+        repo: 'deepseek-ai/deepseek-harness',
+        targetSha: sha,
+        workDir,
+        repoDir: local,
+        env: { PATH: '/usr/bin:/bin', HOME: root },
+        onLog: () => {},
+        onProgress: () => {},
+      })
+      expect(srcRoot).toBe(join(workDir, 'tree'))
+      if (srcRoot === undefined) throw new Error('expected a worktree checkout')
+      expect(readFileSync(join(srcRoot, 'hello.txt'), 'utf8')).toBe('hi\n')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('obtainSourceCheckout', () => {
