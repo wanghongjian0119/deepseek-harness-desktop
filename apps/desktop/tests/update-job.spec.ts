@@ -225,6 +225,7 @@ describe('tryLocalGitSource', () => {
         onProgress: () => {},
       })
       expect(srcRoot).toBe(join(workDir, 'tree'))
+      if (srcRoot === undefined) throw new Error('expected a worktree checkout')
       expect(readFileSync(join(srcRoot, 'hello.txt'), 'utf8')).toBe('hi\n')
     } finally {
       rmSync(root, { recursive: true, force: true })
