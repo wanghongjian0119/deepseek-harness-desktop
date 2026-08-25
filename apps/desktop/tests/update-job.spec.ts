@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { accessSync, constants, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { copyFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -8,6 +9,7 @@ import {
   buildUpdateChildEnv,
   ensurePackageManagerShims,
   formatByteSize,
+  obtainSourceCheckout,
   parseGitRemoteRepo,
   parsePnpmVersion,
   pnpmRegistryArgs,
@@ -251,6 +253,73 @@ describe('tryLocalGitSource', () => {
         onProgress: () => {},
       })
       expect(srcRoot).toBeUndefined()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('obtainSourceCheckout', () => {
+  it('prefers a configured local git repository over the tarball', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-obtain-git-'))
+    try {
+      const upstream = join(root, 'upstream.git')
+      git(root, ['init', '--bare', upstream])
+      const local = join(root, 'local')
+      git(root, ['clone', upstream, local])
+      writeFileSync(join(local, 'hello.txt'), 'hi\n')
+      git(local, ['add', '.'])
+      git(local, ['commit', '-m', 'c1'])
+      git(local, ['branch', '-M', 'master'])
+      git(local, ['push', '-u', 'origin', 'master'])
+      const sha = git(local, ['rev-parse', 'HEAD'])
+      git(local, ['remote', 'set-url', 'origin', 'https://github.com/deepseek-ai/deepseek-harness.git'])
+      git(local, ['config', `url.${upstream}.insteadOf`, 'https://github.com/deepseek-ai/deepseek-harness.git'])
+      const workDir = join(root, 'work')
+      mkdirSync(workDir)
+      const result = await obtainSourceCheckout({
+        repo: 'deepseek-ai/deepseek-harness',
+        targetSha: sha,
+        workDir,
+        env: { PATH: '/usr/bin:/bin', HOME: root },
+        repoDir: local,
+        githubBase: 'https://github.com',
+        onLog: () => {},
+        onProgress: () => {},
+        downloadImpl: async () => { throw new Error('tarball must not be reached') },
+      })
+      expect(result.via).toBe('local-git')
+      expect(result.repoDir).toBe(local)
+      expect(result.srcRoot).toBe(join(workDir, 'tree'))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('falls back to the tarball when no local repo is configured', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-obtain-tar-'))
+    try {
+      const contentDir = join(root, 'content')
+      mkdirSync(contentDir)
+      writeFileSync(join(contentDir, 'file.txt'), 'x\n')
+      const sourceTar = join(root, 'source.tar.gz')
+      execFileSync('tar', ['-czf', sourceTar, '-C', root, 'content'])
+      const workDir = join(root, 'work')
+      mkdirSync(workDir)
+      const result = await obtainSourceCheckout({
+        repo: 'deepseek-ai/deepseek-harness',
+        targetSha: 'b150a551b8d465e31e418e1b2eaf5e79bbb7d28e',
+        workDir,
+        env: { PATH: '/usr/bin:/bin', HOME: root },
+        repoDir: undefined,
+        githubBase: 'https://github.com',
+        onLog: () => {},
+        onProgress: () => {},
+        downloadImpl: async (_url, destination) => { await copyFile(sourceTar, destination) },
+      })
+      expect(result.via).toBe('tarball')
+      expect(result.repoDir).toBeUndefined()
+      expect(readFileSync(join(result.srcRoot, 'file.txt'), 'utf8')).toBe('x\n')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

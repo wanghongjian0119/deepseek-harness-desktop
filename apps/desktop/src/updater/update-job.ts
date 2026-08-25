@@ -2,8 +2,10 @@
  * Source self-update for the desktop shell.
  *
  * The official repository publishes no installers — only `master` — so an
- * update downloads the upstream tarball, bootstraps the declared pnpm on the
- * bundled Node, installs and builds the checkout, assembles a new payload
+ * update prefers a local checkout at `$DSH_DESKTOP_UPDATE_REPO_DIR` (via
+ * `git fetch` + worktree) and otherwise downloads the upstream tarball,
+ * bootstraps the declared pnpm on the bundled Node, installs and builds the
+ * checkout, assembles a new payload
  * (reusing the running payload's Node executable instead of downloading one),
  * boot-smokes it, and atomically flips the `current` pointer. The old payload
  * directory is left in place until the next successful update; the swap only
@@ -72,6 +74,8 @@ export interface RunSourceUpdateOptions {
   currentNodeBinary: string
   /** npm registry for the pnpm tarball and `pnpm install`; defaults to npmmirror. */
   registryUrl?: string
+  /** Local git repository to build from; falls back to $DSH_DESKTOP_UPDATE_REPO_DIR, then the tarball. */
+  repoDir?: string
   /** GitHub base for tarballs; defaults to https://github.com. */
   githubBase?: string
   /** Progress sink. */
@@ -472,6 +476,52 @@ export async function tryLocalGitSource(
   }
 }
 
+/** Result of {@link obtainSourceCheckout}. */
+export interface ObtainSourceResult {
+  /** Repository root ready for install/build. */
+  srcRoot: string
+  /** How the checkout was obtained. */
+  via: 'local-git' | 'tarball'
+  /** Local repository used, defined only when via === 'local-git'. */
+  repoDir: string | undefined
+}
+
+/** Options for {@link obtainSourceCheckout}. */
+interface ObtainSourceCheckoutOptions {
+  repo: string
+  targetSha: string
+  workDir: string
+  env: NodeJS.ProcessEnv
+  /** Local git repository to build from; undefined disables the git path. */
+  repoDir: string | undefined
+  githubBase: string
+  onLog: (message: string) => void
+  onProgress: (stage: UpdateStage, detail: string) => void
+  /** Test hook for the GitHub tarball download. */
+  downloadImpl?: typeof download
+}
+
+/**
+ * Obtain a checkout of the target source: prefer a local git repository,
+ * falling back to the upstream GitHub tarball.
+ * @param options - repo, target SHA, scratch dir, optional local repo, and sinks.
+ * @returns the checkout root plus how it was obtained.
+ */
+export async function obtainSourceCheckout(options: ObtainSourceCheckoutOptions): Promise<ObtainSourceResult> {
+  const { repo, targetSha, workDir, env, repoDir, githubBase, onLog, onProgress, downloadImpl } = options
+  if (repoDir !== undefined) {
+    const srcRoot = await tryLocalGitSource({ repo, targetSha, workDir, repoDir, env, onLog, onProgress })
+    if (srcRoot !== undefined) return { srcRoot, via: 'local-git', repoDir }
+  }
+  const fetchArchive = downloadImpl ?? download
+  onProgress('download-source', `下载 ${repo}@${targetSha.slice(0, 12)} 源码`)
+  const archivePath = join(workDir, 'source.tar.gz')
+  await fetchArchive(`${githubBase}/${repo}/archive/${targetSha}.tar.gz`, archivePath, 'source archive', onLog)
+  onProgress('extract', '解压源码')
+  const srcRoot = await extractTarball(archivePath, join(workDir, 'extract'), env, onLog)
+  return { srcRoot, via: 'tarball', repoDir: undefined }
+}
+
 /**
  * Run the full source update pipeline.
  * @param options - repo, target SHA, home, and sinks.
@@ -510,12 +560,17 @@ export async function runSourceUpdate(options: RunSourceUpdateOptions): Promise<
   log(`update: npm registry ${registryUrl}`)
   log(`update: pnpm store ${storeDir}`)
   try {
-    progress('download-source', `下载 ${repo}@${targetSha.slice(0, 12)} 源码`)
-    const archivePath = join(workDir, 'source.tar.gz')
-    await download(`${githubBase}/${repo}/archive/${targetSha}.tar.gz`, archivePath, 'source archive', log)
-
-    progress('extract', '解压源码')
-    const srcRoot = await extractTarball(archivePath, join(workDir, 'extract'), env, log)
+    const obtained = await obtainSourceCheckout({
+      repo,
+      targetSha,
+      workDir,
+      env,
+      repoDir: options.repoDir ?? process.env[SOURCE_REPO_DIR_ENV],
+      githubBase,
+      onLog: log,
+      onProgress: progress,
+    })
+    const srcRoot = obtained.srcRoot
 
     const manifest = JSON.parse(readFileSync(join(srcRoot, 'package.json'), 'utf8')) as { packageManager?: unknown }
     const pnpmVersion = parsePnpmVersion(typeof manifest.packageManager === 'string' ? manifest.packageManager : undefined)
@@ -595,6 +650,13 @@ export async function runSourceUpdate(options: RunSourceUpdateOptions): Promise<
     await mkdir(payloadsDir(home), { recursive: true })
     switchCurrentPointer(home, targetSha)
 
+    if (obtained.via === 'local-git' && obtained.repoDir !== undefined) {
+      try {
+        await run('git worktree remove', 'git', ['-C', obtained.repoDir, 'worktree', 'remove', '--force', join(workDir, 'tree')], obtained.repoDir, log, env)
+      } catch (error) {
+        log(`update: warning: worktree cleanup failed (${error instanceof Error ? error.message : String(error)}); run \`git worktree prune\` in ${obtained.repoDir}`)
+      }
+    }
     await rm(workDir, { recursive: true, force: true })
     const payloadRoot = join(payloadsDir(home), targetSha)
     log(`update: activated ${repo}@${targetSha.slice(0, 12)} at ${payloadRoot}`)
