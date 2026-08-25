@@ -127,10 +127,13 @@ describe('formatByteSize', () => {
 })
 
 describe('pnpmRegistryArgs', () => {
-  it('returns an explicit --registry flag pair', () => {
-    expect(pnpmRegistryArgs('https://registry.npmmirror.com')).toEqual([
+  it('forces registry, persistent store, and slow-network tuning via CLI flags', () => {
+    expect(pnpmRegistryArgs('https://registry.npmmirror.com', '/home/user/.dsh/desktop/pnpm-store')).toEqual([
       '--registry',
       'https://registry.npmmirror.com',
+      '--config.store-dir=/home/user/.dsh/desktop/pnpm-store',
+      '--config.fetch-timeout=1800000',
+      '--config.network-concurrency=2',
     ])
   })
 })

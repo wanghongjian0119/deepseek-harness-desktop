@@ -224,9 +224,21 @@ export async function writeCheckoutNpmrc(sourceRoot: string, registryUrl: string
   ].join('\n'))
 }
 
-/** Build the pnpm argv fragment that forces a registry on every install. */
-export function pnpmRegistryArgs(registryUrl: string): string[] {
-  return ['--registry', registryUrl]
+/**
+ * Build the pnpm argv fragment that forces a registry and a persistent store
+ * on every install.
+ *
+ * pnpm 11 reads `fetch-timeout` / `network-concurrency` / `store-dir` only
+ * through `--config.<key>=<value>` CLI flags — `.npmrc` lines and
+ * `npm_config_*` env are ignored, and without an explicit store dir pnpm
+ * derives it from `PNPM_HOME` (which lives under the wiped work directory).
+ * The slow-network tuning and the persistent store must ride along as flags.
+ * @param registryUrl - npm registry base URL.
+ * @param storeDir - content-addressable store kept outside the work directory.
+ * @returns the argv fragment appended to every pnpm install.
+ */
+export function pnpmRegistryArgs(registryUrl: string, storeDir: string): string[] {
+  return ['--registry', registryUrl, `--config.store-dir=${storeDir}`, '--config.fetch-timeout=1800000', '--config.network-concurrency=2']
 }
 
 /**
@@ -600,7 +612,7 @@ export async function runSourceUpdate(options: RunSourceUpdateOptions): Promise<
     // GitHub source archives have no `.git`; official `pnpm run build` needs a
     // commit via DSH_CLIENT_COMMIT_HASH (see upstream client-build-environment).
     env.DSH_CLIENT_COMMIT_HASH = targetSha
-    const registryArgs = pnpmRegistryArgs(registryUrl)
+    const registryArgs = pnpmRegistryArgs(registryUrl, storeDir)
     try {
       await run(
         'install dependencies',
