@@ -131,9 +131,9 @@ describe('pnpmRegistryArgs', () => {
     expect(pnpmRegistryArgs('https://registry.npmmirror.com', '/home/user/.dsh/desktop/pnpm-store')).toEqual([
       '--registry',
       'https://registry.npmmirror.com',
-      '--config.store-dir=/home/user/.dsh/desktop/pnpm-store',
-      '--config.fetch-timeout=1800000',
-      '--config.network-concurrency=2',
+      '--store-dir=/home/user/.dsh/desktop/pnpm-store',
+      '--fetch-timeout=1800000',
+      '--network-concurrency=2',
     ])
   })
 })
