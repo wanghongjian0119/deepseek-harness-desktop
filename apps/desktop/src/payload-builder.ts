@@ -108,15 +108,27 @@ let log: (message: string) => void = console.log
 /** Subprocess env, set per {@link assemblePayload} call. */
 let childEnv: NodeJS.ProcessEnv = { ...process.env, CI: 'true' }
 
-/** Run one subprocess, forwarding its output lines; failures include the command. */
+/**
+ * Subprocess output lines carried in a failure message; see {@link run}.
+ * Tools report the cause of a failure on their last lines, so the tail is what
+ * makes a message self-explaining.
+ */
+const FAILURE_OUTPUT_TAIL_LINES = 20
+
+/** Run one subprocess, forwarding its output lines; failures include the command and its last output lines. */
 async function run(label: string, command: string, args: string[], cwd: string): Promise<void> {
   const printable = [command, ...args].map(part => (part.includes(' ') ? JSON.stringify(part) : part)).join(' ')
   log(`${label}: ${printable}`)
+  const tail: string[] = []
   await new Promise<void>((resolvePromise, reject) => {
     const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: childEnv })
     const forward = (chunk: Buffer): void => {
       for (const line of chunk.toString('utf8').split(/\r?\n/)) {
-        if (line !== '') log(line)
+        if (line !== '') {
+          log(line)
+          tail.push(line)
+          if (tail.length > FAILURE_OUTPUT_TAIL_LINES) tail.shift()
+        }
       }
     }
     child.stdout.on('data', forward)
@@ -127,7 +139,9 @@ async function run(label: string, command: string, args: string[], cwd: string):
         resolvePromise()
         return
       }
-      reject(new Error(`assemble-payload: ${label} failed (${code === null ? `signal ${signal ?? 'unknown'}` : `exit code ${code}`}): ${printable}`))
+      const status = code === null ? `signal ${signal ?? 'unknown'}` : `exit code ${code}`
+      const detail = tail.length === 0 ? '' : `\n${tail.join('\n')}`
+      reject(new Error(`assemble-payload: ${label} failed (${status}): ${printable}${detail}`))
     })
   })
 }
@@ -252,8 +266,9 @@ async function extractNodeRuntime(archivePath: string, nodeDir: string): Promise
   await run('extract node runtime', 'tar', ['-xf', archivePath, '-C', extractDir], dirname(archivePath))
   const entries = await readdir(extractDir)
   const inner = entries.length === 1 ? join(extractDir, entries[0] as string) : extractDir
-  // The official binaries are self-contained (full ICU is compiled in); npm,
-  // headers, and share/ docs are not needed by the backend.
+  // The official binaries are self-contained (full ICU is compiled in); npm and
+  // share/ docs are not needed by the backend. The Node-API headers are needed
+  // though — see below.
   const executable = process.platform === 'win32' ? join(inner, 'node.exe') : join(inner, 'bin', 'node')
   if (!existsSync(executable)) {
     throw new Error(`assemble-payload: no node executable found at ${executable} in ${archivePath}`)
@@ -261,7 +276,37 @@ async function extractNodeRuntime(archivePath: string, nodeDir: string): Promise
   const target = process.platform === 'win32' ? join(nodeDir, 'node.exe') : join(nodeDir, 'bin', 'node')
   await mkdir(dirname(target), { recursive: true })
   await cp(executable, target)
+  // The upstream build compiles Node-API addons (`native/system` builds `flock`)
+  // and resolves their headers from `dirname(process.execPath)/../include/node`,
+  // i.e. this very directory. Shipping only the binary makes every source update
+  // fail with "Node-API headers missing"; keep the headers beside it.
+  const headers = join(inner, 'include', 'node')
+  if (existsSync(headers)) {
+    await cp(headers, join(nodeDir, 'include', 'node'), { recursive: true })
+  }
   await rm(extractDir, { recursive: true, force: true })
+}
+
+/**
+ * Fetch the backend index, honoring the boot token handshake used by newer
+ * dsh versions: the readiness URL carries `?token=<t>` and the server swaps
+ * it for an HttpOnly cookie (303 + Set-Cookie) before serving the GUI. A bare
+ * `fetch(url + '/')` follows the 303 but drops the token, so the index 401s;
+ * this performs the exchange and replays the cookie. Older backends serve the
+ * index directly with no handshake.
+ * @param url - the readiness URL (may carry a `?token=` query).
+ * @returns the final index status and body.
+ */
+async function fetchBootIndex(url: string): Promise<{ status: number; html: string }> {
+  const handshake = await fetch(url, { redirect: 'manual' })
+  const setCookie = handshake.headers.get('set-cookie')
+  if (setCookie === null) {
+    // No token→cookie exchange (older backend): the handshake is the index.
+    return { status: handshake.status, html: await handshake.text() }
+  }
+  const cookie = setCookie.split(';')[0] as string
+  const response = await fetch(`${new URL(url).origin}/`, { headers: { cookie } })
+  return { status: response.status, html: await response.text() }
 }
 
 /** Boot the staged CLI over a scratch home and assert the GUI serves. */
@@ -277,9 +322,8 @@ async function runSmoke(payload: string, smokeHome: string): Promise<void> {
   })
   try {
     const url = await server.url
-    const response = await fetch(`${url}/`)
-    if (!response.ok) throw new Error(`assemble-payload: smoke index returned HTTP ${response.status}`)
-    const html = await response.text()
+    const { status, html } = await fetchBootIndex(url)
+    if (status !== 200) throw new Error(`assemble-payload: smoke index returned HTTP ${status}`)
     if (!indexCarriesBootManifest(html)) {
       throw new Error('assemble-payload: smoke index does not carry the __DSH_BOOT__ boot manifest; the GUI cannot boot')
     }
@@ -328,6 +372,11 @@ export async function assemblePayload(options: AssemblePayloadOptions): Promise<
   await mkdir(stageDir, { recursive: true })
 
   const runtimeDir = join(outDir, 'runtime')
+  // A production deploy excludes devDependencies, so a patch declared for a
+  // devDependency has nothing to apply to and pnpm 11 fails the deploy outright
+  // with ERR_PNPM_UNUSED_PATCH. Upstream declares one for @electron/osx-sign,
+  // which only electron-builder reaches. Allowing unused patches downgrades that
+  // to a warning; a patch whose package is in the closure still applies.
   await run('deploy closure', pnpmArgs[0] ?? 'pnpm', [
     ...pnpmArgs.slice(1),
     '--filter', DEPLOY_ROOT_PACKAGE,
@@ -335,6 +384,7 @@ export async function assemblePayload(options: AssemblePayloadOptions): Promise<
     '--config.node-linker=hoisted',
     '--config.auto-install-peers=false',
     '--config.link-workspace-packages=true',
+    '--config.allowUnusedPatches=true',
     runtimeDir,
   ], sourceRoot)
   // pnpm's legacy deploy re-resolves the workspace and prunes package-level
@@ -355,6 +405,14 @@ export async function assemblePayload(options: AssemblePayloadOptions): Promise<
     await mkdir(dirname(destination), { recursive: true })
     await cp(nodeBinarySource, destination)
     if (process.platform !== 'win32') await chmod(destination, 0o755)
+    // Carry the Node-API headers along with the binary. The next source update
+    // compiles native addons with this node and resolves their headers from
+    // `dirname(execPath)/../include/node`, so a payload seeded from a source
+    // tree only reuses its sibling `include/node`.
+    const sourceHeaders = join(dirname(nodeBinarySource), '..', 'include', 'node')
+    if (existsSync(sourceHeaders)) {
+      await cp(sourceHeaders, join(outDir, 'node', 'include', 'node'), { recursive: true })
+    }
   } else {
     const archivePath = await downloadNodeRuntime(target, stageDir)
     await extractNodeRuntime(archivePath, join(outDir, 'node'))
