@@ -7,9 +7,9 @@
 # SUID helper and the userns fallback abort during startup ("clicking the
 # launcher does nothing"). This wrapper starts the app with the sandbox and
 # watches the first two seconds of output; if Chromium prints a startup
-# FATAL (the sandbox abort signature), it relaunches with --no-sandbox so
-# the app still opens. A healthy launch is never delayed — the app starts
-# immediately and the wrapper only supervises.
+# FATAL (the sandbox abort signature), it relaunches unsandboxed with
+# --disable-gpu so the app still opens. A healthy launch is never delayed —
+# the app starts immediately and the wrapper only supervises.
 set -u
 
 BIN="/opt/DeepSeek Harness/dsh-desktop"
@@ -31,10 +31,18 @@ done
 
 if grep -q "FATAL:" "$LOG" 2>/dev/null; then
   # Aborted during startup (almost certainly the sandbox); retry unsandboxed.
+  #
+  # --disable-gpu has to come along: when AppArmor blocks unprivileged user
+  # namespaces the kernel sandbox is not the only casualty, the GPU process
+  # dies on arrival too (launch failed: error_code=1002 / GPU_DEAD_ON_ARRIVAL)
+  # and Chromium gives up with
+  #   FATAL:gpu_data_manager_impl_private.cc:416] GPU process isn't usable. Goodbye.
+  # --no-sandbox alone therefore converts one startup abort into another.
+  # Software rendering is a fair trade for a window that actually opens.
   kill "$APP_PID" 2>/dev/null
   wait "$APP_PID" 2>/dev/null
   : >"$LOG"
-  "$BIN" --no-sandbox "$@" >"$LOG" 2>&1 &
+  "$BIN" --no-sandbox --disable-gpu "$@" >"$LOG" 2>&1 &
   APP_PID=$!
 fi
 
