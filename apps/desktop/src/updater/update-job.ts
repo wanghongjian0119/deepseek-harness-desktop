@@ -312,8 +312,36 @@ async function run(
   })
 }
 
-/** Per-attempt download timeout; large archives on slow links need headroom. */
-const DOWNLOAD_TIMEOUT_MS = 300_000
+/**
+ * Per-attempt download timeout.
+ *
+ * Covers the proxy-less case: the source archive is ~19 MB and a direct
+ * connection to codeload measures ~31 KB/s on hosts where the same file arrives
+ * at 3 MB/s through the system proxy, so a correct download can legitimately
+ * take ten minutes. Aborting a transfer that is still progressing is worse than
+ * waiting.
+ */
+const DOWNLOAD_TIMEOUT_MS = 1_800_000
+
+/**
+ * Fetch implementation for update downloads.
+ *
+ * Electron's `net.fetch` runs on Chromium's network stack, so it resolves the
+ * system proxy the same way the app's own window does: proxy when the host
+ * configures one, direct otherwise. Node's global `fetch` consults neither the
+ * system proxy nor `http_proxy`, so every download went out direct — measured
+ * at ~31 KB/s against codeload while the browser reached 3 MB/s through the
+ * same proxy, which overran the per-attempt timeout on the ~19 MB archive and
+ * failed the update outright.
+ *
+ * Imported on demand: this module is unit-tested outside the Electron runtime,
+ * where a static `electron` import would fail to resolve.
+ * @returns the fetch implementation to use for downloads in this process.
+ */
+async function downloadFetch(): Promise<typeof globalThis.fetch> {
+  const { net } = await import('electron')
+  return net.fetch as unknown as typeof globalThis.fetch
+}
 
 /** Download retry count on network failures. */
 const DOWNLOAD_RETRIES = 3
@@ -326,12 +354,14 @@ export function formatByteSize(bytes: number): string {
 }
 
 /**
- * Fetch one URL to a Buffer, following redirects manually and failing loud.
+ * Fetch one URL to a Buffer, failing loud and retrying per attempt.
  *
- * The redirect is resolved by hand instead of relying on undici's automatic
- * following: on some networks the github.com → codeload redirect reuses a
- * keep-alive connection that the target resets, and the automatic follow then
- * fails while a direct request to the Location URL succeeds.
+ * The request runs on Chromium's network stack — see downloadFetch for why —
+ * and that stack follows redirects itself. Manual redirect resolution is not
+ * available there: Chromium reduces `redirect: 'manual'` to an unreadable
+ * response, which Electron reports as "Redirect was cancelled", so a registry
+ * that answers 302 could never be downloaded. registry.npmmirror.com — the
+ * default mirror — redirects every tarball to cdn.npmmirror.com.
  * @param url - the download URL.
  * @param label - the human-readable download name for error messages.
  * @param onLog - optional detail sink for attempt / size lines.
@@ -343,21 +373,15 @@ async function fetchBody(
   label: string,
   onLog?: (message: string) => void,
 ): Promise<Buffer> {
+  const request = await downloadFetch()
   let lastError: unknown
   for (let attempt = 1; attempt <= DOWNLOAD_RETRIES; attempt += 1) {
     try {
       onLog?.(`download ${label}: GET ${url} (attempt ${attempt}/${DOWNLOAD_RETRIES})`)
-      const response = await fetch(url, {
-        redirect: 'manual',
+      const response = await request(url, {
+        redirect: 'follow',
         signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
       })
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get('location')
-        if (location === null) throw new Error(`update: ${label} redirect without Location (HTTP ${response.status}): ${url}`)
-        const next = new URL(location, url).toString()
-        onLog?.(`download ${label}: redirect ${response.status} → ${next}`)
-        return await fetchBody(next, label, onLog)
-      }
       if (!response.ok) throw new Error(`update: failed to download ${label} (HTTP ${response.status}): ${url}`)
       const totalHeader = response.headers.get('content-length')
       const total = totalHeader !== null ? Number(totalHeader) : undefined
@@ -518,6 +542,31 @@ interface ObtainSourceCheckoutOptions {
 }
 
 /**
+ * Download URLs for the source tarball, in the order they should be tried.
+ *
+ * `github.com/<repo>/archive/<sha>.tar.gz` answers 302 and lands on
+ * `codeload.github.com/<repo>/tar.gz/<sha>`. Requesting the codeload URL
+ * directly skips that redirect hop — the same bytes either way — which matters
+ * behind a proxy that routes the two hosts differently and can reach one but
+ * not the other. The archive URL stays as a fallback for proxies that are the
+ * other way round. A non-default `githubBase` is an explicit override, so it is
+ * used verbatim with no codeload guess.
+ * @param repo - `owner/name` of the watched repository.
+ * @param sha - 40-hex commit to download.
+ * @param githubBase - GitHub web base; defaults to the public host.
+ * @returns download URLs to try in order.
+ */
+export function sourceArchiveUrls(
+  repo: string,
+  sha: string,
+  githubBase = 'https://github.com',
+): string[] {
+  const archiveUrl = `${githubBase}/${repo}/archive/${sha}.tar.gz`
+  if (githubBase !== 'https://github.com') return [archiveUrl]
+  return [`https://codeload.github.com/${repo}/tar.gz/${sha}`, archiveUrl]
+}
+
+/**
  * Obtain a checkout of the target source: prefer a local git repository,
  * falling back to the upstream GitHub tarball.
  * @param options - repo, target SHA, scratch dir, optional local repo, and sinks.
@@ -532,7 +581,18 @@ export async function obtainSourceCheckout(options: ObtainSourceCheckoutOptions)
   const fetchArchive = downloadImpl ?? download
   onProgress('download-source', `下载 ${repo}@${targetSha.slice(0, 12)} 源码`)
   const archivePath = join(workDir, 'source.tar.gz')
-  await fetchArchive(`${githubBase}/${repo}/archive/${targetSha}.tar.gz`, archivePath, 'source archive', onLog)
+  let lastError: unknown
+  for (const url of sourceArchiveUrls(repo, targetSha, githubBase)) {
+    try {
+      await fetchArchive(url, archivePath, 'source archive', onLog)
+      lastError = undefined
+      break
+    } catch (error) {
+      lastError = error
+      onLog(`update: source archive via ${url} failed (${error instanceof Error ? error.message : String(error)})`)
+    }
+  }
+  if (lastError !== undefined) throw lastError
   onProgress('extract', '解压源码')
   const srcRoot = await extractTarball(archivePath, join(workDir, 'extract'), env, onLog)
   return { srcRoot, via: 'tarball', repoDir: undefined }

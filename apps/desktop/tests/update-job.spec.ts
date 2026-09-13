@@ -15,9 +15,27 @@ import {
   pnpmRegistryArgs,
   prependPathEntry,
   rewriteLockfileNpmjsHosts,
+  sourceArchiveUrls,
   tryLocalGitSource,
   writeCheckoutNpmrc,
 } from '../src/updater/update-job.ts'
+
+describe('sourceArchiveUrls', () => {
+  const sha = 'a'.repeat(40)
+
+  it('prefers the codeload endpoint and keeps the archive URL as a fallback', () => {
+    expect(sourceArchiveUrls('deepseek-ai/deepseek-harness', sha)).toEqual([
+      `https://codeload.github.com/deepseek-ai/deepseek-harness/tar.gz/${sha}`,
+      `https://github.com/deepseek-ai/deepseek-harness/archive/${sha}.tar.gz`,
+    ])
+  })
+
+  it('uses an explicit githubBase verbatim, with no codeload guess', () => {
+    expect(sourceArchiveUrls('deepseek-ai/deepseek-harness', sha, 'https://gh.internal')).toEqual([
+      `https://gh.internal/deepseek-ai/deepseek-harness/archive/${sha}.tar.gz`,
+    ])
+  })
+})
 
 describe('parsePnpmVersion', () => {
   it('extracts the version from a packageManager field', () => {
