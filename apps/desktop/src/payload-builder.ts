@@ -344,6 +344,160 @@ export async function dirSize(directory: string): Promise<number> {
   return total
 }
 
+/** Sidebar bundle that owns the in-app brand row. */
+const SIDEBAR_CLIENT_PATH = [
+  'runtime', 'node_modules', '@deepseek-ai', 'dsh-client-ui-sidebar', 'lib', 'client.js',
+] as const
+
+/** Locale bundle owning the `brand.localBuild` string the brand row renders. */
+const LOCALE_CLIENT_PATH = [
+  'runtime', 'node_modules', '@deepseek-ai', 'dsh-client-locale', 'lib', 'client.js',
+] as const
+
+/** Brand name the payload ships in place of upstream's "DSH Local Build". */
+const BRAND_NAME = 'DeepSeek Harness'
+
+/** Version-chip paint: the DeepSeek brand blue behind white type. */
+const BRAND_CHIP_STYLE = [
+  [/(^|;)color:var\(--dsw-alias-label-primary-inverted\)/, '$1color:#fff'],
+  [/(^|;)background:var\(--dsw-alias-label-primary\)/, '$1background:var(--dsw-static-deepseek-450)'],
+] as const
+
+/**
+ * Version-chip declarations per upstream variant. A source build renders the
+ * 6px/10px `buildVersion` chip under the brand name; a release build renders
+ * the 8px/16px `buildRevision` one beside it. Both grow to 10px of type, but
+ * only the source chip's box has to grow with it — the release chip's 16px box
+ * already fits 10px, and shrinking it would be a regression.
+ */
+const BRAND_CHIP_GROWTH: readonly (readonly [string, readonly (readonly [RegExp, string])[]])[] = [
+  ['buildVersion', [
+    [/(^|;)font-size:[\d.]+px/, '$1font-size:10px'],
+    [/(^|;)line-height:[\d.]+px/, '$1line-height:14px'],
+    [/(^|;)height:[\d.]+px/, '$1height:14px'],
+    [/(^|;)border-radius:[\d.]+px/, '$1border-radius:3px'],
+    [/(^|;)padding:0 [\d.]+px/, '$1padding:0 4px'],
+  ]],
+  ['buildRevision', [[/(^|;)font-size:[\d.]+px/, '$1font-size:10px']]],
+]
+
+/** Class only the stacked source-build layout carries; a release build has none. */
+const BRAND_STACK_ROW = 'localBuildBrand'
+
+/**
+ * Boxes holding the stacked row: the row itself plus the two wrappers the
+ * sidebar and the layout each draw around it.
+ */
+const BRAND_STACK_BOXES = ['localBuildBrand', 'brandIdentity', 'brandName'] as const
+
+/**
+ * Height the boxes must reach to hold the pinned row: 18px title + 1px gap +
+ * 14px chip. `..._logoRow` clips with `overflow:hidden`, so a shorter box
+ * truncates the brand.
+ */
+const BRAND_STACK_HEIGHT = '33px'
+
+/**
+ * Dress the sidebar brand row as "DeepSeek Harness" at release legibility.
+ *
+ * Two independent rewrites, each best-effort on its own:
+ *
+ * A. **Name.** Upstream compiles the row's label from the `brand.localBuild`
+ * locale entry, which reads "DSH Local Build" — local builds are not what this
+ * payload is, so both dictionaries are retitled to {@link BRAND_NAME}.
+ *
+ * B. **Type.** Upstream renders that row in two mutually exclusive ways. When
+ * `localBuildVersion()` yields a value — always true for a payload compiled
+ * from source — the name and the version chip are stacked in a fixed-height box
+ * that is sized for a 6px chip. Only a release build, whose `localBuildVersion()`
+ * compiles to `undefined`, gets the release treatment: the full-size
+ * `..._fallbackBrandName` beside a chip whose box already fits a legible label.
+ * The rewrite pins the stacked variant to that same standard — 17px title, a
+ * 10px chip on brand colours, and a box tall enough for both — rather than
+ * inheriting whatever the upstream revision happened to ship.
+ *
+ * Class names carry a per-build hash prefix (`cguSKG_`, `ViNb6q_`, …), so match
+ * on the `_localBuildTitle`-style suffix rather than a literal prefix.
+ *
+ * Cosmetic and best-effort by design: if upstream restructures the markup the
+ * patterns simply do not match, and the payload is left exactly as built.
+ * Failing an update over a font size would be a poor trade.
+ * @param payload - assembled payload root containing `runtime/`.
+ */
+export async function applyBrandTweaks(payload: string): Promise<void> {
+  await retitleBrandName(payload)
+  await resizeBrandRow(payload)
+}
+
+/**
+ * Retitle the `brand.localBuild` locale entry in both dictionaries.
+ * @param payload - assembled payload root containing `runtime/`.
+ */
+async function retitleBrandName(payload: string): Promise<void> {
+  const target = join(payload, ...LOCALE_CLIENT_PATH)
+  if (!existsSync(target)) {
+    log('assemble-payload: locale bundle absent, skipping brand name patch')
+    return
+  }
+  const source = readFileSync(target, 'utf8')
+  // Both the zh and en dictionaries carry the key on its own line; the label is
+  // the only thing to change, so the key and its quoting survive verbatim.
+  const retitled = source.replace(/("brand\.localBuild"\s*:\s*")[^"]*(")/g, `$1${BRAND_NAME}$2`)
+  if (retitled === source) {
+    log('assemble-payload: brand.localBuild entry not found; upstream copy moved, leaving the name alone')
+    return
+  }
+  await writeFile(target, retitled)
+  log(`assemble-payload: brand name retitled to ${BRAND_NAME}`)
+}
+
+/**
+ * Enlarge the brand row to release sizing and paint its version chip.
+ * @param payload - assembled payload root containing `runtime/`.
+ */
+async function resizeBrandRow(payload: string): Promise<void> {
+  const target = join(payload, ...SIDEBAR_CLIENT_PATH)
+  if (!existsSync(target)) {
+    log('assemble-payload: sidebar bundle absent, skipping brand sizing patch')
+    return
+  }
+  // Rewrite the declarations in place rather than the whole rule: upstream
+  // owns property order and may add more of them. Each pattern anchors on the
+  // start of the declaration so `height:` cannot match inside `line-height:`.
+  const restyle = (css: string, suffix: string, changes: readonly (readonly [RegExp, string])[]): string =>
+    css.replace(new RegExp(`([A-Za-z0-9]+_${suffix})\\{([^}]*)\\}`), (rule, selector: string, body: string) => {
+      let next = body
+      for (const [pattern, replacement] of changes) next = next.replace(pattern, replacement)
+      return next === body ? rule : `${selector}{${next}}`
+    })
+  const original = readFileSync(target, 'utf8')
+  let css = original
+  // 12px/13px upstream -> the 17px/18px the release path uses; the box below is
+  // sized for this title, not for the one it replaces.
+  css = restyle(css, 'localBuildTitle', [
+    [/font-size:[\d.]+px/, 'font-size:17px'],
+    [/line-height:[\d.]+px/, 'line-height:18px'],
+  ])
+  for (const [suffix, changes] of BRAND_CHIP_GROWTH) {
+    css = restyle(css, suffix, [...changes, ...BRAND_CHIP_STYLE])
+  }
+  // Only the stacked layout outgrows its box. The release layout sets the same
+  // 17px name beside a 16px chip in a 24px box, which already fits.
+  if (new RegExp(`[A-Za-z0-9]+_${BRAND_STACK_ROW}\\{`).test(css)) {
+    for (const suffix of BRAND_STACK_BOXES) {
+      css = restyle(css, suffix, [[/(^|;)height:[\d.]+px/, `$1height:${BRAND_STACK_HEIGHT}`]])
+    }
+  }
+  // Every rule either changed or did not; an unchanged file means the suffix
+  // patterns matched nothing at all.
+  if (css === original) {
+    log('assemble-payload: sidebar brand sizing patch matched nothing; upstream markup changed, leaving it alone')
+    return
+  }
+  await writeFile(target, css)
+  log('assemble-payload: sidebar brand row enlarged to release sizing')
+}
+
 /**
  * Assemble a payload from a built checkout into `outDir`. The last step is
  * the boot smoke: a payload that does not serve the GUI manifest fails the
@@ -398,6 +552,8 @@ export async function assemblePayload(options: AssemblePayloadOptions): Promise<
   await restoreLegacyHoists(sourceRoot, runtimeDir)
   await materializeStagedLinks(runtimeDir)
   for (const name of DEPLOY_ONLY_DOCS) await rm(join(runtimeDir, name), { force: true })
+  // Before the smoke boot, so what gets verified is what ships.
+  await applyBrandTweaks(outDir)
 
   const target = nodeDistTarget()
   if (nodeBinarySource !== undefined) {
